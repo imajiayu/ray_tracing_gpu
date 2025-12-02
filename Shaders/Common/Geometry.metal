@@ -234,10 +234,13 @@ inline bool constant_medium_hit(
     }
 
     // 步骤4: 计算光线在边界内的距离
+    // 注意: direction 已经是归一化的,所以 ray_length 就是 1.0,但我们显式计算以匹配 CPU 版本
     float ray_length = length(r.direction);
     float distance_inside_boundary = (rec2.t - rec1.t) * ray_length;
 
     // 步骤5: 使用负指数分布随机决定散射距离
+    // 使用 Beer's Law: P(散射距离 < t) = 1 - exp(-density * t)
+    // 反函数: t = -ln(random) / density = neg_inv_density * ln(random)
     float random_val = random_float(rng);
     float hit_distance = medium.neg_inv_density * log(random_val);
 

@@ -90,25 +90,32 @@ struct GPUCameraParams {
     var lowerLeftCorner: SIMD3<Float>
     var horizontal: SIMD3<Float>
     var vertical: SIMD3<Float>
+    var defocusDiskU: SIMD3<Float>  // 景深盘 U 向量
+    var defocusDiskV: SIMD3<Float>  // 景深盘 V 向量
+    var defocusAngle: Float         // 散焦角度（用于判断是否启用景深）
+    var padding: SIMD3<Float>       // 对齐填充
 }
 
 // MARK: - BVH 加速结构
 
-/// GPU AABB（32 bytes 对齐）
+/// GPU AABB（32 bytes，使用 SIMD4 避免对齐问题）
 struct GPUAABB {
-    var min: SIMD3<Float>   // 12 bytes
-    var padding1: Float     // 4 bytes
-    var max: SIMD3<Float>   // 12 bytes
-    var padding2: Float     // 4 bytes
+    var minx_miny_minz_pad1: SIMD4<Float>  // 16 bytes (min.xyz, padding)
+    var maxx_maxy_maxz_pad2: SIMD4<Float>  // 16 bytes (max.xyz, padding)
+
+    init(min: SIMD3<Float>, max: SIMD3<Float>) {
+        self.minx_miny_minz_pad1 = SIMD4<Float>(min.x, min.y, min.z, 0)
+        self.maxx_maxy_maxz_pad2 = SIMD4<Float>(max.x, max.y, max.z, 0)
+    }
 }  // Total: 32 bytes
 
-/// GPU BVH 节点（48 bytes 对齐）
+/// GPU BVH 节点（48 bytes）
 struct GPUBVHNode {
     var bbox: GPUAABB           // 32 bytes
     var leftChildOrFirst: UInt32  // 4 bytes (内部节点：左子节点索引；叶节点：首个几何体索引)
     var rightChild: UInt32      // 4 bytes (内部节点：右子节点索引；叶节点：unused)
     var geometryCount: UInt32   // 4 bytes (内部节点：0；叶节点：几何体数量)
-    var padding: UInt32         // 4 bytes
+    var splitAxis: UInt32       // 4 bytes (分割轴: 0=X, 1=Y, 2=Z)
 }  // Total: 48 bytes
 
 // MARK: - 渲染参数

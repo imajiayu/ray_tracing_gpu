@@ -167,34 +167,38 @@ func createFinalScene() -> Scene {
     // ========================================
     // 6. 玻璃球 #2 + 体积雾效果 (蓝色雾)
     // ========================================
-    // TODO: 体积雾功能待修复，暂时注释
-    // let blueFogBoundaryIdx = UInt32(scene.geometry.getSpheres().count)
+    // 边界球体：玻璃外壳 + 内部蓝色雾
+    // CPU版本：boundary球体使用dielectric材质并add到场景，然后constant_medium也引用这个boundary
+    // GPU版本：先添加玻璃球（可见外壳），然后用这个索引创建体积雾
+    let blueFogBoundaryIdx = UInt32(scene.geometry.getSpheres().count)
     scene.add(Sphere(
         center: SIMD3<Float>(360, 150, 145),
         radius: 70,
-        materialIndex: glassMatIdx
+        materialIndex: glassMatIdx  // 使用玻璃材质，外壳可见
     ))
-    // scene.add(ConstantMedium(
-    //     sphereIndex: blueFogBoundaryIdx,
-    //     density: 0.2,
-    //     materialIndex: blueFogMatIdx
-    // ))
+    scene.add(ConstantMedium(
+        sphereIndex: blueFogBoundaryIdx,
+        density: 0.2,
+        materialIndex: blueFogMatIdx
+    ))
 
     // ========================================
     // 7. 全局大气雾
     // ========================================
-    // TODO: 体积雾功能待修复，暂时注释
-    // let globalFogBoundaryIdx = UInt32(scene.geometry.getSpheres().count)
-    // scene.add(Sphere(
-    //     center: SIMD3<Float>(0, 0, 0),
-    //     radius: 5000,
-    //     materialIndex: glassMatIdx
-    // ))
-    // scene.add(ConstantMedium(
-    //     sphereIndex: globalFogBoundaryIdx,
-    //     density: 0.0001,
-    //     materialIndex: whiteFogMatIdx
-    // ))
+    // CPU版本：boundary不add到场景，只通过constant_medium引用
+    // GPU版本：不add边界球体，由constant_medium内部使用
+    // 注意：全局雾密度极低(0.0001)，效果非常微弱
+    let globalFogBoundaryIdx = UInt32(scene.geometry.getSpheres().count)
+    scene.add(Sphere(
+        center: SIMD3<Float>(0, 0, 0),
+        radius: 5000,
+        materialIndex: UInt32.max  // 特殊标记：仅作为边界，不参与普通渲染
+    ))
+    scene.add(ConstantMedium(
+        sphereIndex: globalFogBoundaryIdx,
+        density: 0.0001,
+        materialIndex: whiteFogMatIdx
+    ))
 
     // ========================================
     // 8. 地球纹理球体
@@ -215,9 +219,15 @@ func createFinalScene() -> Scene {
     ))
 
     // ========================================
-    // 10. 1000个小白球集群 (简化版，暂不支持旋转变换)
+    // 10. 1000个小白球集群 (带Y轴15°旋转)
     // ========================================
-    // 注：GPU 版本暂时省略旋转变换，直接平移
+    // 创建旋转变换 (Y轴15°)
+    let clusterTransform = Transform(
+        translation: SIMD3<Float>(-100, 270, 395),
+        rotation: SIMD3<Float>(0, 15, 0)  // Y轴旋转15度
+    )
+    let clusterTransformIdx = Int32(scene.addTransform(clusterTransform))
+
     let ns = 1000
     for _ in 0..<ns {
         let randomPos = SIMD3<Float>(
@@ -225,13 +235,12 @@ func createFinalScene() -> Scene {
             Float.random(in: 0...165),
             Float.random(in: 0...165)
         )
-        // 平移到 (-100, 270, 395)
-        let finalPos = randomPos + SIMD3<Float>(-100, 270, 395)
 
         scene.add(Sphere(
-            center: finalPos,
+            center: randomPos,
             radius: 10,
-            materialIndex: whiteMatIdx
+            materialIndex: whiteMatIdx,
+            transformIndex: clusterTransformIdx
         ))
     }
 

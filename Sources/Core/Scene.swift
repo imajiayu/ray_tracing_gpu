@@ -11,7 +11,8 @@ struct Scene {
     var materials: [Material]
     var textures: [GPUTexture]
     var imageTextures: [MTLTexture]  // Metal 纹理数组（用于图片纹理）
-    var transforms: [GPUTransform]
+    var cpuTransforms: [Transform]   // CPU端Transform（用于BVH构建）
+    var transforms: [GPUTransform]   // GPU端Transform（用于渲染）
     var camera: CameraConfig
 
     // MARK: - 初始化
@@ -21,6 +22,7 @@ struct Scene {
         self.materials = materials
         self.textures = textures
         self.imageTextures = imageTextures
+        self.cpuTransforms = []
         self.transforms = transforms
         self.camera = camera
     }
@@ -30,6 +32,7 @@ struct Scene {
         self.materials = []
         self.textures = []
         self.imageTextures = []
+        self.cpuTransforms = []
         self.transforms = []
         self.camera = CameraConfig()
     }
@@ -71,6 +74,7 @@ struct Scene {
     @discardableResult
     mutating func addTransform(_ transform: Transform) -> Int32 {
         let index = Int32(transforms.count)
+        cpuTransforms.append(transform)  // 保存CPU端Transform
         transforms.append(transform.toGPU())
         return index
     }

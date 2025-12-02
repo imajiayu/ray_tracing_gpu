@@ -27,7 +27,9 @@ class ImageLoader {
         let options: [MTKTextureLoader.Option: Any] = [
             .textureUsage: MTLTextureUsage.shaderRead.rawValue,
             .textureStorageMode: MTLStorageMode.shared.rawValue,
-            .SRGB: false  // 使用线性颜色空间（与 ray tracing 一致）
+            // 注意：图片通常是 sRGB 编码的，需要转换为线性空间用于光线追踪
+            // MTKTextureLoader 会自动进行 sRGB→线性 的转换
+            .SRGB: true  // 告诉加载器图片是 sRGB 编码的
         ]
 
         do {

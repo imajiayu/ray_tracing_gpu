@@ -11,12 +11,23 @@ using namespace metal;
 
 // ========== Perlin 噪声 ==========
 
+/// 置换表模拟（与CPU版本的perm_x/y/z对应）
+/// 使用哈希函数生成伪随机排列
+inline int perlin_perm(int i) {
+    // 使用PCG哈希生成伪随机置换
+    // 确保 0-255 映射到 0-255 的伪随机排列
+    uint h = uint(i) * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return int(h & 255u);
+}
+
 /// 生成伪随机梯度向量（使用哈希函数）
 /// 参考 CPU 版本的实现，使用梯度噪声而不是值噪声
-inline float3 perlin_random_gradient(int ix, int iy, int iz) {
+inline float3 perlin_random_gradient(int index) {
     // 使用哈希函数生成伪随机向量
-    // 确保相同的输入总是产生相同的输出
-    const uint h = (uint(ix) * 1973u + uint(iy) * 9277u + uint(iz) * 26699u) ^ 0x6c078965u;
+    // index 已经是通过置换表XOR得到的
+    uint h = uint(index) * 747796405u + 2891336453u;
 
     // 生成单位向量（使用 PCG 哈希）
     uint h1 = h * 747796405u + 2891336453u;
@@ -49,15 +60,17 @@ inline float perlin_noise(float3 p, thread RandomState* rng) {
     float w = fz * fz * (3.0f - 2.0f * fz);
 
     // 获取8个角的梯度向量
+    // 使用置换表和XOR操作，完全匹配CPU版本的实现
     float3 c[2][2][2];
     for (int di = 0; di < 2; di++) {
         for (int dj = 0; dj < 2; dj++) {
             for (int dk = 0; dk < 2; dk++) {
-                // 使用位运算模拟 CPU 版本的 perm_x/y/z 和异或操作
-                int hash_x = (ix + di) & 255;
-                int hash_y = (iy + dj) & 255;
-                int hash_z = (iz + dk) & 255;
-                c[di][dj][dk] = perlin_random_gradient(hash_x, hash_y, hash_z);
+                // CPU版本: perm_x[(i+di)&255] ^ perm_y[(j+dj)&255] ^ perm_z[(k+dk)&255]
+                int perm_x = perlin_perm((ix + di) & 255);
+                int perm_y = perlin_perm((iy + dj) & 255);
+                int perm_z = perlin_perm((iz + dk) & 255);
+                int index = perm_x ^ perm_y ^ perm_z;
+                c[di][dj][dk] = perlin_random_gradient(index);
             }
         }
     }

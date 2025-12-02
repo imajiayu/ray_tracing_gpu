@@ -65,7 +65,9 @@ struct Transform {
     func toGPU() -> GPUTransform {
         // 将角度转换为弧度
         let pitch = rotation.x * Float.pi / 180.0
-        let yaw = rotation.y * Float.pi / 180.0
+        // 注意：取反Y轴旋转以匹配CPU版本的rotate_y方向
+        // CPU版本逆时针旋转，标准右手坐标系
+        let yaw = -rotation.y * Float.pi / 180.0
         let roll = rotation.z * Float.pi / 180.0
 
         // 计算旋转矩阵（ZYX顺序：先Roll，再Yaw，最后Pitch）

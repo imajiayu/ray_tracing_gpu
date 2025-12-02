@@ -121,6 +121,10 @@ struct CameraParams {
     float3 lower_left_corner;
     float3 horizontal;
     float3 vertical;
+    float3 defocus_disk_u;  // 景深盘 U 向量
+    float3 defocus_disk_v;  // 景深盘 V 向量
+    float defocus_angle;    // 散焦角度
+    float3 padding;         // 对齐填充
 };
 
 // ========== 渲染参数 ==========
@@ -135,6 +139,9 @@ struct RenderParams {
     uint constant_medium_count;  // 体积雾数量
     uint use_background;  // 0 = black, 1 = sky gradient
     uint sample_offset;   // 当前batch的样本偏移量
+    uint use_bvh;         // 0 = 禁用 BVH, 1 = 启用 BVH
+    uint bvh_node_count;  // BVH 节点数量
+    uint padding;         // 对齐
 };
 
 #endif // TYPES_METAL
