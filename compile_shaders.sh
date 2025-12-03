@@ -15,13 +15,8 @@ mkdir -p "$BUILD_DIR"
 echo "[1/3] Compiling .metal -> .air..."
 
 xcrun -sdk macosx metal \
-    -c "$SHADER_DIR/Kernels/TestGradient.metal" \
-    -o "$BUILD_DIR/TestGradient.air" \
-    -I "$SHADER_DIR"
-
-xcrun -sdk macosx metal \
-    -c "$SHADER_DIR/Kernels/SimpleRayTracing.metal" \
-    -o "$BUILD_DIR/SimpleRayTracing.air" \
+    -c "$SHADER_DIR/Kernels/RayTracing.metal" \
+    -o "$BUILD_DIR/RayTracing.air" \
     -I "$SHADER_DIR"
 
 xcrun -sdk macosx metal \
@@ -37,8 +32,7 @@ xcrun -sdk macosx metal \
 # 创建 .metallib
 echo "[2/3] Linking .air -> .metallib..."
 xcrun -sdk macosx metallib \
-    "$BUILD_DIR/TestGradient.air" \
-    "$BUILD_DIR/SimpleRayTracing.air" \
+    "$BUILD_DIR/RayTracing.air" \
     "$BUILD_DIR/Accumulation.air" \
     "$BUILD_DIR/ColorConversion.air" \
     -o "$BUILD_DIR/default.metallib"
@@ -50,4 +44,4 @@ cp "$BUILD_DIR/default.metallib" Resources/
 
 echo "✓ Shaders compiled successfully!"
 echo "  Output: Resources/default.metallib"
-echo "  Kernels: test_gradient, simple_raytrace, accumulate_kernel, reset_accumulation_kernel, rgb_to_bgra8"
+echo "  Kernels: raytrace, accumulate_kernel, reset_accumulation_kernel, rgb_to_bgra8"

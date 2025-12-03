@@ -1,217 +1,189 @@
 # Ray Tracing GPU - 基于 Metal 的 GPU 光线追踪渲染器
 
-**项目类型**: 从零开始的 Swift + Metal 原生实现
+**项目类型**: 纯 Swift + Metal 实现
 **目标平台**: macOS (Apple Silicon / Intel)
 **技术栈**: Swift 5.9+, Metal 3, MetalKit
-**参考项目**: ~/ray_tracing (C++ CPU/GPU 混合渲染器)
+**参考项目**: ~/ray_tracing (C++ CPU 版本)
 
 ---
 
 ## 项目概述
 
-本项目是对原 C++ 光线追踪项目的完全重写，使用 Swift 语言和 Metal 原生窗口实现 GPU 加速的物理真实感光线追踪渲染器。
+使用 Swift 和 Metal 实现的 GPU 加速物理真实感光线追踪渲染器。
 
-**核心设计目标**:
-- ✅ **纯 Swift/Metal 实现**: 无 C++ 依赖，充分利用 Swift 语言特性
-- 🔄 **双渲染模式**: 静态图片渲染 + 实时交互窗口
-- ✅ **GPU 优先架构**: Metal 计算着色器为核心，CPU 仅负场景管理
-- 🔄 **物理真实感**: 路径追踪、多重重要性采样、完整材质系统
-- ✅ **高性能**: BVH 加速结构、内存对齐优化
-
----
-
-## 项目进度
-
-### Phase 1: 核心基础设施 ✅ (已完成)
-
-**完成日期**: 2025-11-26
-**状态**: 全部完成
-
-**已实现**:
-- ✅ Swift Package Manager 项目结构
-- ✅ 核心数学库 (Vec3, Ray, Color, Interval)
-- ✅ Metal 上下文管理 (MetalContext)
-- ✅ GPU 数据结构定义 (内存对齐到 16 字节)
-- ✅ Metal 着色器编译系统 (compile_shaders.sh)
-- ✅ 球体几何 + Lambertian 材质
-- ✅ GPU 路径追踪内核 (迭代式，无递归)
-- ✅ PCG 随机数生成器 (GPU)
-
-**渲染成果**:
-- 场景: 3 球体 (红、黄、蓝 Lambertian)
-- 分辨率: 800×450 @ 10 spp @ 50 depth
-- 性能: **13.79 ms** (261 M rays/s)
-- 加速比: **9.6× vs CPU 版本**
-
-**详细文档**: `docs/phase1_completed.md`
+**核心特性**:
+- ✅ **纯 Swift/Metal 实现**: 无 C++ 依赖
+- ✅ **GPU 优先架构**: Metal 计算着色器为核心
+- ✅ **BVH 加速结构**: 支持大规模复杂场景
+- ✅ **完整材质系统**: Lambertian, Metal, Dielectric, DiffuseLight
+- ✅ **纹理支持**: 纯色、棋盘格、图像、Perlin 噪声
+- ✅ **几何变换**: 平移、旋转
 
 ---
 
-### Phase 2: 完整材质与几何 ✅ (已完成)
+## 当前状态
 
-**完成日期**: 2025-11-27
-**状态**: 全部完成
+### ✅ 已实现功能 (Phase 1-3)
 
-**已实现**:
-1. **材质系统**
-   - ✅ Lambertian (漫反射)
-   - ✅ Metal (金属反射，支持模糊度)
-   - ✅ Dielectric (电介质折射)
-   - ✅ DiffuseLight (发光材质)
-   - ✅ Isotropic (各向同性散射，用于体积雾)
+**渲染核心**:
+- GPU 路径追踪内核 (迭代式，无递归)
+- PCG 随机数生成器
+- BVH 加速结构 (SAH 分割)
+- 离线图片渲染模式 (PPM 输出)
 
-2. **几何体**
-   - ✅ Sphere (球体，支持变换)
-   - ✅ Quad (四边形)
-   - ✅ Box (长方体，由6个Quad组成)
-   - ✅ ConstantMedium (体积雾，已实现但待调试)
+**材质系统**:
+- Lambertian (漫反射)
+- Metal (金属反射 + 模糊度)
+- Dielectric (电介质折射)
+- DiffuseLight (发光材质)
 
-3. **纹理系统**
-   - ✅ SolidColor (纯色)
-   - ✅ CheckerTexture (3D棋盘纹理)
-   - ✅ ImageTexture (图像纹理，JPEG/PNG支持)
-   - ✅ NoiseTexture (Perlin梯度噪声，大理石效果)
+**几何体**:
+- Sphere (球体)
+- Quad (四边形)
+- Box (长方体，由 6 个 Quad 组成)
 
-4. **测试场景**
-   - ✅ Cornell Box (完整实现)
-   - ✅ Bouncing Spheres (488球体)
-   - ✅ Texture Test (纹理展示)
-   - ✅ Final Scene (最终演示场景，1006球体+2401四边形)
+**纹理系统**:
+- SolidColor (纯色)
+- CheckerTexture (3D 棋盘格)
+- ImageTexture (JPEG/PNG 支持)
+- NoiseTexture (Perlin 梯度噪声)
 
-5. **变换系统**
-   - ✅ Translation (平移)
-   - ✅ Rotation (旋转，Y轴)
+**变换系统**:
+- Translation (平移)
+- RotationY (Y 轴旋转)
 
-**渲染成果**:
-- Cornell Box: 600×600 @ 100 spp @ 50 depth
-- Final Scene: 800×800 @ 10 spp @ 10 depth ≈ 9.1 秒
-- Bouncing Spheres: 800×450 @ 10 spp @ 50 depth
-- 性能: 0.7-0.9 M rays/s (无BVH加速)
+**测试场景**:
+- Cornell Box (600×600)
+- Bouncing Spheres (485 球体)
+- Texture Test (地球纹理)
+- Final Scene (1006 球体 + 2401 四边形)
 
-**已知问题**:
-- ⚠️ ConstantMedium (体积雾) 实现有bug，已临时注释
-- ⚠️ 大场景性能较低，急需BVH加速
-
-**详细文档**: `docs/phase2_completed.md`
+**性能表现**:
+| 场景 | 分辨率 | spp | 深度 | 渲染时间 | 性能 |
+|------|-------|-----|------|---------|------|
+| Bouncing Spheres | 800×450 | 10 | 50 | ~180 ms | 19.9 M rays/s |
+| Cornell Box | 400×400 | 10 | 50 | ~116 ms | - |
+| Final Scene | 400×400 | 10 | 10 | ~88 ms | 18.1 M rays/s |
 
 ---
 
-### Phase 3: BVH 加速结构 📋 (准备开始)
+## 未实现功能
 
-**目标**: 实现 GPU 友好的 BVH 加速，大幅提升复杂场景性能
+### ⏳ Phase 4: 多重重要性采样 (MIS)
 
-**待实现**:
-1. **AABB 包围盒**
-   - ⏳ Sphere AABB 计算
-   - ⏳ Quad AABB 计算
-   - ⏳ AABB 相交测试
-
-2. **BVH 构建 (CPU)**
-   - ⏳ SAH (Surface Area Heuristic) 分割
-   - ⏳ 递归构建二叉树
-   - ⏳ FlatBVH 扁平化（线性数组）
-
-3. **GPU BVH 遍历**
-   - ⏳ 迭代式遍历（32层固定栈）
-   - ⏳ AABB快速拒绝
-   - ⏳ 叶节点几何体测试
-
-4. **数据结构优化**
-   - ⏳ BVH节点内存对齐（16字节）
-   - ⏳ 几何体数据分离存储
-
-**性能目标**:
-- Final Scene (1006球+2401四边形): 9.1s → < 500ms (18× 加速)
-- Bouncing Spheres (488球): < 15ms @ 10 spp
-
-**详细文档**: `docs/phase3.md`
-
----
-
-### Phase 4: 多重重要性采样 ⏳ (待开始)
-
-**目标**: 实现 MIS 采样策略，显著降低噪声
+**目标**: 显著降低渲染噪声
 
 **待实现**:
 - PDF 系统 (CosinePDF, HittablePDF, MixturePDF)
 - ONB 正交基变换
-- GPU MIS 实现
 - Next Event Estimation (NEE)
-- 俄罗斯轮盘赌 (RR)
+- 俄罗斯轮盘赌 (Russian Roulette)
 
-**目标**: Cornell Box 噪声降低 70-80%
+**预期效果**: Cornell Box 噪声降低 70-80%
 
 ---
 
-### Phase 5: 实时渲染窗口 ⏳ (待开始)
+### ⏳ Phase 5: 实时窗口模式
 
-**目标**: 实现交互式实时渲染窗口
+**目标**: 交互式实时渲染
 
 **待实现**:
 - MTKView 窗口 (Metal 原生)
-- 累积渲染缓冲区
+- 累积渲染缓冲区 (Progressive Rendering)
 - FPS 相机控制 (WASD + 鼠标)
-- 质量预设控制 (Preview/Medium/High)
-- 实时 HUD 显示
+- 质量预设切换 (Preview/Medium/High)
+- 实时 HUD 显示 (FPS, spp, camera info)
 
-**性能目标**: 1080p @ 4 spp @ 60 FPS
+**性能目标**: 1080p @ 4 spp @ 60 FPS (简单场景)
 
----
-
-### Phase 6: 静态图片渲染 ⏳ (待开始)
-
-**目标**: 实现高质量离线渲染模式
-
-**待实现**:
-- CLI 命令行接口
-- 批次渲染 (大场景分批上传 GPU)
-- 进度条显示
-- PNG/EXR 输出
-- 后处理 (Gamma 校正, Tone mapping)
-
-**性能目标**: 4K @ 10000 spp 离线渲染
+**预留代码**:
+- `Shaders/Kernels/Accumulation.metal` - 累积渲染内核
+- `Shaders/Kernels/ColorConversion.metal` - RGBA → BGRA8 转换
 
 ---
 
-### Phase 7: 润色与优化 ⏳ (待开始)
+### ⏳ Phase 6: 体积雾效果 (ConstantMedium)
 
-**目标**: 性能调优、文档完善、最终测试
+**目标**: 实现烟雾、云层等体积散射效果
 
 **待实现**:
-- Metal 性能分析器测试
-- 线程组大小调优
-- 内存访问优化
-- 完整的场景库 (BouncingSpheres, CornellBox, FinalScene)
-- API 文档 (Swift DocC)
+- ConstantMedium 几何体 (边界 + 密度)
+- Isotropic 材质 (各向同性散射)
+- GPU 端体积散射算法
+
+**参考**: CPU 版本已实现，需移植到 GPU
+
+---
+
+### ⏳ Phase 7: 高级功能
+
+**图片格式支持**:
+- PNG 输出 (当前仅支持 PPM)
+- EXR 输出 (HDR)
+
+**后处理**:
+- Tone Mapping (Reinhard, ACES)
+- Bloom 效果
+- 降噪 (AI-based Denoiser)
+
+**几何体扩展**:
+- Triangle Mesh (三角面片)
+- OBJ 文件加载
+- 法线贴图
+
+**性能优化**:
+- Wavefront Path Tracing (更高 GPU 利用率)
+- 双向路径追踪 (BDPT)
 
 ---
 
 ## 技术架构
 
-### 目录结构
+### 项目结构
 
 ```
 ray_tracing_gpu/
 ├── Sources/
-│   ├── Core/           # 核心数学库 (Vec3, Ray, Color)
-│   ├── Geometry/       # 几何图元 (Sphere, Quad, Box, Triangle)
-│   ├── Materials/      # 材质系统 (Lambertian, Metal, Dielectric)
-│   ├── Textures/       # 纹理系统 (Solid, Checker, Image, Noise)
-│   ├── Acceleration/   # 加速结构 (AABB, BVH, FlatBVH)
-│   ├── GPU/            # Metal 上下文和 GPU 数据结构
-│   └── Main/           # 主程序
+│   ├── Core/           # 核心数学 (Vec3, Ray, Color, Interval)
+│   ├── Geometry/       # 几何图元 (Sphere, Quad)
+│   ├── Materials/      # 材质系统 (Material, Texture)
+│   ├── Acceleration/   # BVH 加速结构 (AABB, FlatBVH)
+│   ├── Transforms/     # 几何变换 (Transform)
+│   ├── Camera/         # 相机 (Camera, CameraConfig)
+│   ├── Rendering/      # 渲染器 (Renderer)
+│   ├── Scene/          # 场景管理 (Scene, GeometryList)
+│   ├── Scenes/         # 场景定义 (BouncingSpheres, CornellBox, ...)
+│   ├── GPU/            # Metal 管理 (MetalContext, GPUStructs)
+│   ├── Utils/          # 工具类 (CommandLineArgs, ImageLoader, ImageWriter)
+│   └── main.swift      # 主程序入口
 ├── Shaders/
-│   ├── Common/         # 通用 Metal 函数 (Types, Random, Geometry, Materials)
-│   └── Kernels/        # 光线追踪内核 (SimpleRayTracing)
-├── Resources/          # 编译后的 .metallib
+│   ├── Common/
+│   │   ├── Types.metal         # GPU 数据结构
+│   │   ├── Random.metal        # PCG 随机数生成器
+│   │   ├── Geometry.metal      # 几何相交测试
+│   │   ├── Materials.metal     # 材质散射
+│   │   ├── Textures.metal      # 纹理采样
+│   │   ├── Transform.metal     # 几何变换
+│   │   └── Acceleration.metal  # BVH 遍历
+│   └── Kernels/
+│       ├── RayTracing.metal       # 主渲染内核
+│       ├── Accumulation.metal     # 累积渲染 (预留)
+│       └── ColorConversion.metal  # 颜色转换 (预留)
+├── Resources/
+│   ├── images/         # 纹理图片 (earthmap.jpg)
+│   └── default.metallib  # 编译后的着色器
 ├── docs/               # 开发文档
-│   ├── phase1_completed.md  # Phase 1 完成总结
-│   └── phase2.md            # Phase 2 任务规划
-├── CLAUDE.md           # 本文档
-└── README.md           # 用户文档
+└── compile_shaders.sh  # 着色器编译脚本
 ```
 
-### GPU 数据结构设计
+**代码规模**:
+- Swift 文件: 27 个 (~3000 行)
+- Metal 文件: 10 个 (~1400 行)
+- 总计: ~4400 行
+
+---
+
+## GPU 数据结构设计
 
 **关键原则**: 所有结构体对齐到 16 字节倍数
 
@@ -234,95 +206,78 @@ struct GPUSphere {
 };
 ```
 
----
-
-## CPU vs GPU SIMD 优化策略
-
-### 关键理解：纯 GPU 渲染不需要 CPU SIMD
-
-**本项目（纯 GPU）策略**:
-- ✅ **热路径 100% 在 GPU**: 光线追踪、材质评估、BVH 遍历全在 GPU
-- ✅ **CPU 只做场景管理**: BVH 构建（一次性）、数据传输（带宽瓶颈）
-- ✅ **Metal 自动 SIMD 化**: GPU 编译器自动向量化 float3 操作
-- ✅ **简化代码**: 使用 Swift SIMD3<Float> 类型别名即可
-
-**Swift 端实现**:
-```swift
-typealias Vec3 = SIMD3<Float>  // 简单、类型安全、零开销
-```
-
-**Metal 端自动优化**:
-- GPU 自动 SIMD 化（Warp/Wavefront 32-64 线程锁步执行）
-- float3 操作自动编译为向量指令
-- 无需手动优化
-
-**唯一关键：GPU 内存对齐**（16 字节倍数）
+**内存对齐验证**: 使用 `MemoryLayout<T>.stride` 确保正确性
 
 ---
 
-## 关键技术挑战与解决方案
+## 关键技术要点
 
 ### 1. Swift 与 Metal 互操作
 
-**挑战**: Swift 结构体内存布局与 Metal 对齐规则不同
+- **类型映射**: `SIMD3<Float>` ↔ `float3`
+- **手动填充**: 确保 16 字节对齐
+- **缓冲区传输**: `.storageModeShared` 零拷贝
 
-**解决方案**:
-- 所有 GPU 结构体手动填充到 16 字节倍数
-- 单元测试验证内存布局 (sizeof, alignment)
+### 2. BVH 加速结构
 
-### 2. Metal 坐标系差异
+- **CPU 构建**: SAH (Surface Area Heuristic) 分割
+- **扁平化**: 线性数组存储 (GPU 友好)
+- **GPU 遍历**: 迭代式 (32 层固定栈)
 
-**挑战**: Metal 纹理原点在左上角，与传统图像坐标系不同
+### 3. 路径追踪算法
 
-**解决方案**:
-- 翻转 Y 坐标: `v = (height - 1 - gid.y) / height`
+- **迭代式实现**: 避免递归 (Metal 限制)
+- **Russian Roulette**: 动态终止光线
+- **材质采样**: 余弦加权半球采样
 
-### 3. Metal 标准库函数冲突
+### 4. 纹理采样
 
-**挑战**: 自定义 `reflect` 和 `refract` 与 Metal 标准库冲突
-
-**解决方案**:
-- 使用 `metal::reflect()` 和 `metal::refract()` 显式调用
-
-### 4. BVH 栈深度限制
-
-**挑战**: Metal 不支持动态栈，递归深度有限
-
-**解决方案**:
-- 迭代式 BVH 遍历（32-64 层固定栈）
-- 栈溢出时终止光线（返回背景颜色）
+- **图像纹理**: Metal texture2d + 线性采样
+- **Perlin 噪声**: GPU 端哈希函数生成置换表
+- **UV 坐标**: 自动计算 (球体、四边形)
 
 ---
 
-## 性能目标
+## 使用方法
 
-### 静态图片渲染
+### 编译着色器
+```bash
+./compile_shaders.sh
+```
 
-| 场景 | 分辨率 | spp | 深度 | 目标时间 | 当前 | 对比 CPU |
-|------|-------|-----|------|---------|------|---------|
-| 3 Spheres | 800×450 | 10 | 50 | < 100 ms | **13.79 ms** ✅ | 9.6× 加速 |
-| Bouncing Spheres | 800×450 | 10 | 50 | < 15 ms | 待测试 | 20× 加速 |
-| Cornell Box | 800×800 | 100 | 50 | < 500 ms | 待测试 | 15× 加速 |
+### 渲染场景
+```bash
+# Cornell Box (600×600, 100 spp)
+swift run raytracer --scene cornellBox --spp 100 --width 600
 
-### 实时渲染
+# Final Scene (800×800, 10 spp)
+swift run raytracer --scene finalScene --spp 10 --width 800 --output final.ppm
 
-| 分辨率 | spp | 深度 | 目标 FPS | 场景复杂度 |
-|-------|-----|------|---------|-----------|
-| 1920×1080 | 1 | 10 | 60 | 简单 (< 100 图元) |
-| 1920×1080 | 4 | 10 | 60 | 中等 (< 500 图元) |
+# 完整参数
+swift run raytracer \
+  --scene <sceneName> \
+  --spp <samplesPerPixel> \
+  --max-depth <maxDepth> \
+  --width <imageWidth> \
+  --output <filename>
+```
+
+**可用场景**:
+- `bouncingSpheres` - 485 个随机球体
+- `cornellBox` - Cornell 盒子
+- `textureTest` - 地球纹理测试
+- `finalScene` - 完整演示场景
 
 ---
 
 ## 参考资源
 
 **原项目**:
-- ~/ray_tracing/CLAUDE.md - 完整技术文档
-- ~/ray_tracing/shaders/common.metal - GPU 实现参考
+- ~/ray_tracing/CLAUDE.md - CPU 版本技术文档
 
 **官方文档**:
 - [Metal Programming Guide](https://developer.apple.com/metal/)
 - [Metal Shading Language Specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
-- [Swift SIMD Documentation](https://developer.apple.com/documentation/swift/simd)
 
 **学术资源**:
 - Peter Shirley - "Ray Tracing in One Weekend" 系列
@@ -330,20 +285,6 @@ typealias Vec3 = SIMD3<Float>  // 简单、类型安全、零开销
 
 ---
 
-## 下一步行动
-
-**当前重点**: Phase 2 - 完整材质与几何
-
-**立即任务**:
-1. 测试 Metal 和 Dielectric 材质
-2. 实现 Quad/Box/Triangle 几何体
-3. 实现纹理系统
-4. 渲染 Cornell Box 场景
-
-**详细规划**: 参见 `docs/phase2.md`
-
----
-
-**文档版本**: v2.0
-**最后更新**: 2025-11-26
-**当前状态**: Phase 1 ✅ 完成 → Phase 2 🔄 进行中
+**文档版本**: v3.0
+**最后更新**: 2025-12-02
+**当前状态**: Phase 1-3 ✅ 完成 → Phase 4 ⏳ 待开始

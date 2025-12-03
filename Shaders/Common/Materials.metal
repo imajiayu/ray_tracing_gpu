@@ -19,6 +19,10 @@ inline bool lambertian_scatter(
     GPUMaterial mat,
     device const GPUTexture* textures,
     texture2d<float> image_texture,
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z,
     Ray r_in,
     HitRecord rec,
     thread float3* attenuation,
@@ -34,11 +38,13 @@ inline bool lambertian_scatter(
     }
 
     // 生成散射光线
-    *scattered = Ray{rec.p, normalize(scatter_direction), r_in.time};
+    // 注意：不要归一化！散射方向需要保持原始的方向性来实现正确的余弦加权分布
+    *scattered = Ray{rec.p, scatter_direction, r_in.time};
 
     // 获取反照率（支持纹理）
     if (mat.texture_index >= 0) {
-        *attenuation = texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture, rng);
+        *attenuation = texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture,
+                                    perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z);
     } else {
         *attenuation = mat.albedo;
     }
@@ -128,34 +134,6 @@ inline bool diffuse_light_scatter(
     return false;
 }
 
-// ========== Isotropic 各向同性材质（体积雾用）==========
-
-/// Isotropic 散射（支持纹理）
-/// 参考 ~/ray_tracing/include/materials/material.h:isotropic
-/// 各向同性散射，用于体积雾效果
-inline bool isotropic_scatter(
-    GPUMaterial mat,
-    device const GPUTexture* textures,
-    texture2d<float> image_texture,
-    Ray r_in,
-    HitRecord rec,
-    thread float3* attenuation,
-    thread Ray* scattered,
-    thread RandomState* rng
-) {
-    // 均匀球面散射
-    *scattered = Ray{rec.p, random_unit_vector(rng), r_in.time};
-
-    // 获取反照率（支持纹理）
-    if (mat.texture_index >= 0) {
-        *attenuation = texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture, rng);
-    } else {
-        *attenuation = mat.albedo;
-    }
-
-    return true;
-}
-
 // ========== 材质发光 ==========
 
 /// 材质发光函数（支持纹理）
@@ -164,9 +142,12 @@ inline float3 material_emitted(
     device const GPUMaterial* materials,
     device const GPUTexture* textures,
     texture2d<float> image_texture,
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z,
     uint material_index,
-    HitRecord rec,
-    thread RandomState* rng
+    HitRecord rec
 ) {
     GPUMaterial mat = materials[material_index];
 
@@ -174,7 +155,8 @@ inline float3 material_emitted(
         // 只有正面击中才发光
         if (rec.front_face) {
             if (mat.texture_index >= 0) {
-                return texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture, rng);
+                return texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture,
+                                    perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z);
             } else {
                 return mat.emission;
             }
@@ -191,6 +173,10 @@ inline bool material_scatter(
     device const GPUMaterial* materials,
     device const GPUTexture* textures,
     texture2d<float> image_texture,
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z,
     uint material_index,
     Ray r_in,
     HitRecord rec,
@@ -202,15 +188,15 @@ inline bool material_scatter(
 
     switch (mat.type) {
         case MaterialLambertian:
-            return lambertian_scatter(mat, textures, image_texture, r_in, rec, attenuation, scattered, rng);
+            return lambertian_scatter(mat, textures, image_texture,
+                                     perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z,
+                                     r_in, rec, attenuation, scattered, rng);
         case MaterialMetal:
             return metal_scatter(mat, r_in, rec, attenuation, scattered, rng);
         case MaterialDielectric:
             return dielectric_scatter(mat, r_in, rec, attenuation, scattered, rng);
         case MaterialDiffuseLight:
             return diffuse_light_scatter(mat, textures, r_in, rec, attenuation, scattered, rng);
-        case MaterialIsotropic:
-            return isotropic_scatter(mat, textures, image_texture, r_in, rec, attenuation, scattered, rng);
         default:
             return false;
     }

@@ -28,13 +28,6 @@ class MetalContext {
         print("[Metal] ✓ Device: \(device.name)")
     }
 
-    // MARK: - 着色器库
-
-    /// 创建默认着色器库
-    func makeDefaultLibrary() -> MTLLibrary? {
-        return device.makeDefaultLibrary()
-    }
-
     // MARK: - 计算管线
 
     /// 创建计算管线状态
@@ -106,14 +99,4 @@ class MetalContext {
         return buffer
     }
 
-    // MARK: - 命令执行
-
-    /// 创建命令缓冲区
-    func makeCommandBuffer() -> MTLCommandBuffer? {
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            print("[Metal] ❌ Failed to create command buffer")
-            return nil
-        }
-        return commandBuffer
-    }
 }

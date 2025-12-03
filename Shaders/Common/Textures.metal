@@ -11,39 +11,20 @@ using namespace metal;
 
 // ========== Perlin 噪声 ==========
 
-/// 置换表模拟（与CPU版本的perm_x/y/z对应）
-/// 使用哈希函数生成伪随机排列
-inline int perlin_perm(int i) {
-    // 使用PCG哈希生成伪随机置换
-    // 确保 0-255 映射到 0-255 的伪随机排列
-    uint h = uint(i) * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    h = (h >> 22u) ^ h;
-    return int(h & 255u);
-}
-
-/// 生成伪随机梯度向量（使用哈希函数）
-/// 参考 CPU 版本的实现，使用梯度噪声而不是值噪声
-inline float3 perlin_random_gradient(int index) {
-    // 使用哈希函数生成伪随机向量
-    // index 已经是通过置换表XOR得到的
-    uint h = uint(index) * 747796405u + 2891336453u;
-
-    // 生成单位向量（使用 PCG 哈希）
-    uint h1 = h * 747796405u + 2891336453u;
-    uint h2 = h1 * 747796405u + 2891336453u;
-    uint h3 = h2 * 747796405u + 2891336453u;
-
-    float x = float(h1) / 4294967296.0f * 2.0f - 1.0f;
-    float y = float(h2) / 4294967296.0f * 2.0f - 1.0f;
-    float z = float(h3) / 4294967296.0f * 2.0f - 1.0f;
-
-    return normalize(float3(x, y, z));
-}
-
-/// Perlin 梯度噪声实现（参考 CPU 版本）
-/// 使用梯度向量和三线性插值
-inline float perlin_noise(float3 p, thread RandomState* rng) {
+/// Perlin 梯度噪声实现（使用 CPU 传入的数据，与 CPU 版本完全一致）
+/// 参数：
+///   - p: 采样点
+///   - randvec: 梯度向量表 (256 个)
+///   - perm_x: X 轴置换表
+///   - perm_y: Y 轴置换表
+///   - perm_z: Z 轴置换表
+inline float perlin_noise(
+    float3 p,
+    constant float3* randvec,
+    constant int* perm_x,
+    constant int* perm_y,
+    constant int* perm_z
+) {
     // 整数部分
     int ix = int(floor(p.x));
     int iy = int(floor(p.y));
@@ -65,12 +46,12 @@ inline float perlin_noise(float3 p, thread RandomState* rng) {
     for (int di = 0; di < 2; di++) {
         for (int dj = 0; dj < 2; dj++) {
             for (int dk = 0; dk < 2; dk++) {
-                // CPU版本: perm_x[(i+di)&255] ^ perm_y[(j+dj)&255] ^ perm_z[(k+dk)&255]
-                int perm_x = perlin_perm((ix + di) & 255);
-                int perm_y = perlin_perm((iy + dj) & 255);
-                int perm_z = perlin_perm((iz + dk) & 255);
-                int index = perm_x ^ perm_y ^ perm_z;
-                c[di][dj][dk] = perlin_random_gradient(index);
+                // CPU版本: randvec[perm_x[(i+di)&255] ^ perm_y[(j+dj)&255] ^ perm_z[(k+dk)&255]]
+                int px = perm_x[(ix + di) & 255];
+                int py = perm_y[(iy + dj) & 255];
+                int pz = perm_z[(iz + dk) & 255];
+                int index = px ^ py ^ pz;
+                c[di][dj][dk] = randvec[index];
             }
         }
     }
@@ -93,13 +74,20 @@ inline float perlin_noise(float3 p, thread RandomState* rng) {
 }
 
 /// 湍流噪声（多层Perlin噪声叠加）
-inline float turb(float3 p, int depth, thread RandomState* rng) {
+inline float turb(
+    float3 p,
+    int depth,
+    constant float3* randvec,
+    constant int* perm_x,
+    constant int* perm_y,
+    constant int* perm_z
+) {
     float accum = 0.0f;
     float3 temp_p = p;
     float weight = 1.0f;
 
     for (int i = 0; i < depth; i++) {
-        accum += weight * perlin_noise(temp_p, rng);
+        accum += weight * perlin_noise(temp_p, randvec, perm_x, perm_y, perm_z);
         weight *= 0.5f;
         temp_p *= 2.0f;
     }
@@ -117,7 +105,10 @@ inline float3 texture_value(
     float v,
     float3 p,
     texture2d<float> image_texture,
-    thread RandomState* rng
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z
 ) {
     switch (tex.type) {
         case TextureSolidColor:
@@ -137,12 +128,15 @@ inline float3 texture_value(
 
         case TextureNoise:
             // Perlin噪声纹理（大理石效果）
+            // CPU 版本: color(0.5, 0.5, 0.5) * (1.0 + sin(scale * p.z + 10.0 * turb(p, 7)))
+            // 关键：turb() 接收原始 p，不是 scale * p！
             {
-                float noise_val = turb(tex.scale * p, 7, rng);
+                float noise_val = turb(p, 7, perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z);
                 float sine_val = sin(tex.scale * p.z + 10.0f * noise_val);
-                // sine_val 范围 [-1, 1]，归一化到 [0, 1]
-                // (1.0 + sine_val) / 2.0 => [0, 1]
-                return tex.albedo * 0.5f * (1.0f + sine_val);
+                // 注意：CPU 版本直接乘以 (1.0 + sine_val)，不额外除以 2
+                // sine_val 范围 [-1, 1]，所以 (1.0 + sine_val) 范围 [0, 2]
+                // 最终颜色范围: [0, 1] (因为 tex.albedo = 0.5)
+                return tex.albedo * (1.0f + sine_val);
             }
 
         case TextureImage:

@@ -61,15 +61,6 @@ struct GPUQuad {
     float2 padding4;            // 8 bytes
 };  // Total: 96 bytes -> 112 bytes (16-byte aligned)
 
-/// GPU 体积雾（32 bytes，与 Swift GPUConstantMedium 对齐）
-struct GPUConstantMedium {
-    uint boundary_type;         // 4 bytes (0 = sphere, 1 = quad)
-    uint boundary_index;        // 4 bytes (引用边界几何体的索引)
-    float neg_inv_density;      // 4 bytes (-1 / density)
-    uint material_index;        // 4 bytes (isotropic 材质索引)
-    float3 padding;             // 12 bytes
-};  // Total: 32 bytes
-
 // ========== 纹理 ==========
 
 enum TextureType : uint {
@@ -97,8 +88,7 @@ enum MaterialType : uint {
     MaterialLambertian = 0,
     MaterialMetal = 1,
     MaterialDielectric = 2,
-    MaterialDiffuseLight = 3,
-    MaterialIsotropic = 4
+    MaterialDiffuseLight = 3
 };
 
 /// GPU 材质（与 Swift GPUMaterial 对齐）
@@ -136,7 +126,6 @@ struct RenderParams {
     uint max_depth;
     uint sphere_count;
     uint quad_count;
-    uint constant_medium_count;  // 体积雾数量
     uint use_background;  // 0 = black, 1 = sky gradient
     uint sample_offset;   // 当前batch的样本偏移量
     uint use_bvh;         // 0 = 禁用 BVH, 1 = 启用 BVH

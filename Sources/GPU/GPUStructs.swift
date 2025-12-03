@@ -44,15 +44,6 @@ struct GPUQuad {
     var padding4: SIMD2<Float>  // 8 bytes
 }  // Total: 96 bytes -> 112 bytes (16-byte aligned)
 
-/// GPU 体积雾（32 bytes 对齐）
-struct GPUConstantMedium {
-    var boundaryType: UInt32    // 4 bytes (0 = sphere, 1 = quad)
-    var boundaryIndex: UInt32   // 4 bytes (引用边界几何体的索引)
-    var negInvDensity: Float    // 4 bytes (-1 / density)
-    var materialIndex: UInt32   // 4 bytes (isotropic 材质索引)
-    var padding: SIMD3<Float>   // 12 bytes
-}  // Total: 32 bytes
-
 // MARK: - 纹理
 
 /// GPU 纹理（48 bytes 对齐）
@@ -128,10 +119,9 @@ struct GPURenderParams {
     var maxDepth: UInt32
     var sphereCount: UInt32
     var quadCount: UInt32
-    var constantMediumCount: UInt32  // 体积雾数量
     var useBackground: UInt32  // 0 = black, 1 = sky gradient
     var sampleOffset: UInt32   // 当前batch的样本偏移量
     var useBVH: UInt32  // 0 = 禁用 BVH, 1 = 启用 BVH
     var bvhNodeCount: UInt32  // BVH 节点数量
-    var padding: UInt32  // 对齐到 48 bytes
+    var padding: UInt32  // 对齐到 44 bytes
 }

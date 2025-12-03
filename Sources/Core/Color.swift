@@ -13,17 +13,6 @@ extension Color {
         return Color(sqrt(x), sqrt(y), sqrt(z))
     }
 
-    // MARK: - 格式转换
-
-    /// 转换为 0-255 整数 RGB
-    func toRGB255() -> (r: UInt8, g: UInt8, b: UInt8) {
-        let corrected = self.gammaCorrected
-        let r = UInt8(256 * corrected.x.clamped(to: 0..<0.999))
-        let g = UInt8(256 * corrected.y.clamped(to: 0..<0.999))
-        let b = UInt8(256 * corrected.z.clamped(to: 0..<0.999))
-        return (r, g, b)
-    }
-
     // MARK: - 预设颜色
 
     static let black = Color(0, 0, 0)

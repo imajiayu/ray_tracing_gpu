@@ -1,5 +1,9 @@
 // ColorConversion.metal
 // Convert float RGBA buffer to BGRA8 texture for display
+//
+// ⚠️ Phase 5 - Window Mode (预留代码)
+// 此文件将在 Phase 5 实现窗口模式时启用
+// 当前版本仅支持离线图片渲染模式
 
 #include <metal_stdlib>
 using namespace metal;

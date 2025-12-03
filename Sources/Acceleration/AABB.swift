@@ -137,6 +137,44 @@ struct AABB {
     }
 }
 
+// MARK: - 变换辅助函数
+
+/// 应用旋转到点（Swift端实现，与GPU端对应）
+fileprivate func applyRotation(_ transform: Transform, _ point: Point3) -> Point3 {
+    // 将角度转换为弧度
+    let pitch = transform.rotation.x * Float.pi / 180.0
+    let yaw = transform.rotation.y * Float.pi / 180.0
+    let roll = transform.rotation.z * Float.pi / 180.0
+
+    // 计算旋转矩阵（与Transform.toGPU()相同）
+    let cosPitch = cos(pitch)
+    let sinPitch = sin(pitch)
+    let cosYaw = cos(yaw)
+    let sinYaw = sin(yaw)
+    let cosRoll = cos(roll)
+    let sinRoll = sin(roll)
+
+    // 旋转矩阵 R = Rz(roll) * Ry(yaw) * Rx(pitch)
+    let m00 = cosYaw * cosRoll
+    let m01 = cosYaw * sinRoll
+    let m02 = sinYaw
+
+    let m10 = sinPitch * sinYaw * cosRoll - cosPitch * sinRoll
+    let m11 = sinPitch * sinYaw * sinRoll + cosPitch * cosRoll
+    let m12 = sinPitch * cosYaw
+
+    let m20 = -(cosPitch * sinYaw * cosRoll + sinPitch * sinRoll)
+    let m21 = -(cosPitch * sinYaw * sinRoll - sinPitch * cosRoll)
+    let m22 = cosPitch * cosYaw
+
+    // 应用旋转矩阵
+    return Point3(
+        m00 * point.x + m01 * point.y + m02 * point.z,
+        m10 * point.x + m11 * point.y + m12 * point.z,
+        m20 * point.x + m21 * point.y + m22 * point.z
+    )
+}
+
 // MARK: - 几何体包围盒扩展
 
 extension Sphere {
@@ -155,88 +193,12 @@ extension Sphere {
 
         let transform = transforms[Int(transformIndex)]
 
-        // 如果没有旋转，只有平移，直接平移AABB
-        if simd_length(transform.rotation) <= 1e-6 {
-            let r = SIMD3<Float>(radius, radius, radius)
-            let translatedCenter = center + transform.translation
-            return AABB(min: translatedCenter - r, max: translatedCenter + r)
-        }
-
-        // 如果有旋转，采样球面上的多个点，变换后计算AABB
-        // 采样策略：6个轴向极点 + 8个对角顶点（共14个点）
-        var samplePoints: [Point3] = []
-
-        // 6个轴向极点（沿 ±X, ±Y, ±Z）
-        samplePoints.append(center + SIMD3<Float>(radius, 0, 0))
-        samplePoints.append(center + SIMD3<Float>(-radius, 0, 0))
-        samplePoints.append(center + SIMD3<Float>(0, radius, 0))
-        samplePoints.append(center + SIMD3<Float>(0, -radius, 0))
-        samplePoints.append(center + SIMD3<Float>(0, 0, radius))
-        samplePoints.append(center + SIMD3<Float>(0, 0, -radius))
-
-        // 8个对角顶点（球体外接立方体的8个角）
-        let r_diag = radius / sqrt(3.0)  // 对角线长度 / sqrt(3) = 单轴分量
-        for i in 0..<8 {
-            let x = (i & 1) == 0 ? r_diag : -r_diag
-            let y = (i & 2) == 0 ? r_diag : -r_diag
-            let z = (i & 4) == 0 ? r_diag : -r_diag
-            samplePoints.append(center + SIMD3<Float>(x, y, z))
-        }
-
-        // 变换所有采样点到世界空间
-        let transformedPoints = samplePoints.map { point in
-            // 1. 先旋转
-            var p = applyRotation(transform, point)
-            // 2. 再平移
-            p += transform.translation
-            return p
-        }
-
-        // 用变换后的点计算AABB
-        var box = AABB()
-        for p in transformedPoints {
-            box.expand(by: p)
-        }
-
-        // 扩展一点点避免退化
-        return box.pad()
-    }
-
-    /// 应用旋转到点（Swift端实现，与GPU端对应）
-    private func applyRotation(_ transform: Transform, _ point: Point3) -> Point3 {
-        // 将角度转换为弧度
-        let pitch = transform.rotation.x * Float.pi / 180.0
-        // 注意：取反Y轴旋转以匹配CPU版本的rotate_y方向
-        let yaw = -transform.rotation.y * Float.pi / 180.0
-        let roll = transform.rotation.z * Float.pi / 180.0
-
-        // 计算旋转矩阵（与Transform.toGPU()相同）
-        let cosPitch = cos(pitch)
-        let sinPitch = sin(pitch)
-        let cosYaw = cos(yaw)
-        let sinYaw = sin(yaw)
-        let cosRoll = cos(roll)
-        let sinRoll = sin(roll)
-
-        // 旋转矩阵 R = Rz(roll) * Ry(yaw) * Rx(pitch)
-        let m00 = cosYaw * cosRoll
-        let m01 = cosYaw * sinRoll
-        let m02 = -sinYaw
-
-        let m10 = sinPitch * sinYaw * cosRoll - cosPitch * sinRoll
-        let m11 = sinPitch * sinYaw * sinRoll + cosPitch * cosRoll
-        let m12 = sinPitch * cosYaw
-
-        let m20 = cosPitch * sinYaw * cosRoll + sinPitch * sinRoll
-        let m21 = cosPitch * sinYaw * sinRoll - sinPitch * cosRoll
-        let m22 = cosPitch * cosYaw
-
-        // 应用旋转矩阵
-        return Point3(
-            m00 * point.x + m01 * point.y + m02 * point.z,
-            m10 * point.x + m11 * point.y + m12 * point.z,
-            m20 * point.x + m21 * point.y + m22 * point.z
-        )
+        // 对于球体，旋转不改变半径，只改变球心位置
+        // 因此AABB始终是以变换后的球心为中心、半径为R的立方体
+        let rotatedCenter = applyRotation(transform, center)
+        let worldCenter = rotatedCenter + transform.translation
+        let r = SIMD3<Float>(radius, radius, radius)
+        return AABB(min: worldCenter - r, max: worldCenter + r)
     }
 }
 
@@ -255,13 +217,8 @@ extension Quad {
         if transformIndex >= 0 && transformIndex < transforms.count {
             let transform = transforms[Int(transformIndex)]
             corners = corners.map { point in
-                // 1. 先旋转
-                var p = point
-                if simd_length(transform.rotation) > 1e-6 {
-                    p = applyRotation(transform, p)
-                }
-                // 2. 再平移
-                return p + transform.translation
+                let rotated = applyRotation(transform, point)
+                return rotated + transform.translation
             }
         }
 
@@ -273,43 +230,6 @@ extension Quad {
 
         // 扩展一点点避免退化
         return box.pad()
-    }
-
-    /// 应用旋转到点（Swift端实现，与GPU端对应）
-    private func applyRotation(_ transform: Transform, _ point: Point3) -> Point3 {
-        // 将角度转换为弧度
-        let pitch = transform.rotation.x * Float.pi / 180.0
-        // 注意：取反Y轴旋转以匹配CPU版本的rotate_y方向
-        let yaw = -transform.rotation.y * Float.pi / 180.0
-        let roll = transform.rotation.z * Float.pi / 180.0
-
-        // 计算旋转矩阵（与Transform.toGPU()相同）
-        let cosPitch = cos(pitch)
-        let sinPitch = sin(pitch)
-        let cosYaw = cos(yaw)
-        let sinYaw = sin(yaw)
-        let cosRoll = cos(roll)
-        let sinRoll = sin(roll)
-
-        // 旋转矩阵 R = Rz(roll) * Ry(yaw) * Rx(pitch)
-        let m00 = cosYaw * cosRoll
-        let m01 = cosYaw * sinRoll
-        let m02 = -sinYaw
-
-        let m10 = sinPitch * sinYaw * cosRoll - cosPitch * sinRoll
-        let m11 = sinPitch * sinYaw * sinRoll + cosPitch * cosRoll
-        let m12 = sinPitch * cosYaw
-
-        let m20 = cosPitch * sinYaw * cosRoll + sinPitch * sinRoll
-        let m21 = cosPitch * sinYaw * sinRoll - sinPitch * cosRoll
-        let m22 = cosPitch * cosYaw
-
-        // 应用旋转矩阵
-        return Point3(
-            m00 * point.x + m01 * point.y + m02 * point.z,
-            m10 * point.x + m11 * point.y + m12 * point.z,
-            m20 * point.x + m21 * point.y + m22 * point.z
-        )
     }
 }
 
