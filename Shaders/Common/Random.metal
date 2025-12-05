@@ -67,8 +67,8 @@ inline float3 random_unit_vector(thread RandomState* rng) {
     while (true) {
         float3 p = random_vec3_range(rng, -1.0f, 1.0f);
         float lensq = dot(p, p);
-        // 避免除零和长度过小的向量
-        if (1e-8f < lensq && lensq <= 1.0f) {
+        // 避免除零和长度过小的向量（提高阈值避免数值不稳定）
+        if (1e-6f < lensq && lensq <= 1.0f) {
             return p / sqrt(lensq);
         }
     }

@@ -137,11 +137,13 @@ inline bool bvh_hit(
             uint second = dir_is_neg[axis] ? left_idx : right_idx;
 
             // 栈溢出检查（确保有足够空间存放两个子节点）
-            if (stack_ptr < MAX_STACK_SIZE - 1) {
+            if (stack_ptr + 2 <= MAX_STACK_SIZE) {
                 // 远端子节点先入栈（后访问），近端后入栈（先访问）
                 stack[stack_ptr++] = second;
                 stack[stack_ptr++] = first;
             }
+            // 注意：如果栈溢出，我们跳过这些子节点（可能漏掉某些相交）
+            // 这是一个保守的做法，避免崩溃。正确的解决方案是使用更大的栈或动态栈。
         }
     }
 

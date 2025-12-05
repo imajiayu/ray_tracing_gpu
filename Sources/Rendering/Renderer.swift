@@ -17,21 +17,108 @@ class Renderer {
 
         // 生成 Perlin 数据（使用固定种子42，与CPU版本完全一致）
         self.perlinData = PerlinData(seed: 42)
-        print("[Renderer] ✓ Perlin data generated (seed: 42)")
     }
 
-    /// 渲染场景到纹理
+    /// 渲染场景到纹理（用于实时模式）
+    /// - Parameters:
+    ///   - scene: 场景
+    ///   - camera: 相机
+    ///   - bvh: BVH 加速结构
+    ///   - buffers: 预创建的 GPU 缓冲区
+    ///   - batchSize: 每批次的采样数（实时模式建议使用 1）
+    /// - Returns: 渲染后的 Metal 纹理（RGBA32Float 格式）
+    func renderToTexture(
+        scene: Scene,
+        camera: Camera,
+        bvh: FlatBVH,
+        buffers: GPUBuffers,
+        sphereCount: Int,
+        quadCount: Int,
+        batchSize: Int = 1,
+        sampleOffset: UInt32 = 0
+    ) -> MTLTexture? {
+        // 创建输出纹理
+        guard let outputTexture = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight) else {
+            return nil
+        }
+
+        // 渲染参数（使用传入的计数，而不是重新调用 scene.toGPU()）
+        let samplesPerPixel = UInt32(batchSize)
+        let maxDepth = scene.camera.maxDepth
+        let useBackground: UInt32 = scene.camera.useBackground ? 1 : 0
+
+        var renderParams = GPURenderParams(
+            width: UInt32(camera.imageWidth),
+            height: UInt32(camera.imageHeight),
+            samplesPerPixel: samplesPerPixel,
+            maxDepth: maxDepth,
+            sphereCount: UInt32(sphereCount),
+            quadCount: UInt32(quadCount),
+            useBackground: useBackground,
+            sampleOffset: sampleOffset,
+            useBVH: 1,
+            bvhNodeCount: UInt32(bvh.nodes.count),
+            lightsCount: UInt32(scene.lights.count),
+            useMIS: 1
+        )
+
+        var cameraParams = camera.gpuParams
+
+        // 执行渲染（单批次，不输出日志）
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+
+        computeEncoder.setComputePipelineState(pipeline)
+        computeEncoder.setTexture(outputTexture, index: 0)
+
+        // 设置图片纹理（如果有）
+        if !scene.imageTextures.isEmpty {
+            computeEncoder.setTexture(scene.imageTextures[0], index: 1)
+        }
+
+        computeEncoder.setBuffer(buffers.sphereBuffer, offset: 0, index: 0)
+        computeEncoder.setBuffer(buffers.materialBuffer, offset: 0, index: 1)
+        computeEncoder.setBytes(&cameraParams, length: MemoryLayout<GPUCameraParams>.size, index: 2)
+        computeEncoder.setBytes(&renderParams, length: MemoryLayout<GPURenderParams>.size, index: 3)
+        computeEncoder.setBuffer(buffers.quadBuffer, offset: 0, index: 4)
+        computeEncoder.setBuffer(buffers.textureBuffer, offset: 0, index: 5)
+        computeEncoder.setBuffer(buffers.transformBuffer, offset: 0, index: 6)
+        computeEncoder.setBuffer(buffers.bvhNodeBuffer, offset: 0, index: 7)
+        computeEncoder.setBuffer(buffers.geometryIndexBuffer, offset: 0, index: 8)
+        computeEncoder.setBuffer(buffers.perlinRandvecBuffer, offset: 0, index: 9)
+        computeEncoder.setBuffer(buffers.perlinPermXBuffer, offset: 0, index: 10)
+        computeEncoder.setBuffer(buffers.perlinPermYBuffer, offset: 0, index: 11)
+        computeEncoder.setBuffer(buffers.perlinPermZBuffer, offset: 0, index: 12)
+        computeEncoder.setBuffer(buffers.lightIndexBuffer, offset: 0, index: 13)
+
+        // 设置线程组大小
+        let threadsPerGrid = MTLSize(width: camera.imageWidth, height: camera.imageHeight, depth: 1)
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+
+        computeEncoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        return outputTexture
+    }
+
+    /// 渲染场景到像素数据（用于离线模式）
     /// - Parameters:
     ///   - scene: 场景
     ///   - camera: 相机
     ///   - bvh: BVH 加速结构
     ///   - batchSize: 每批次的采样数
+    ///   - progressCallback: 进度回调（batch index）
     /// - Returns: 渲染后的像素数据
     func render(
         scene: Scene,
         camera: Camera,
         bvh: FlatBVH,
-        batchSize: Int
+        batchSize: Int,
+        progressCallback: ((Int) -> Void)? = nil
     ) -> (pixels: [Float], renderTime: TimeInterval) {
         // 转换为 GPU 数据
         let (gpuSpheres, gpuQuads, gpuMaterials, gpuTextures, gpuTransforms) = scene.toGPU()
@@ -43,7 +130,8 @@ class Renderer {
             materials: gpuMaterials,
             textures: gpuTextures,
             transforms: gpuTransforms,
-            bvh: bvh
+            bvh: bvh,
+            lights: scene.lights
         ) else {
             fatalError("Failed to create GPU buffers")
         }
@@ -58,11 +146,7 @@ class Renderer {
         let maxDepth = scene.camera.maxDepth
         let useBackground: UInt32 = scene.camera.useBackground ? 1 : 0
 
-        // 启用 BVH（场景几何体数量 >= 10 时启用）
-        // 强制启用 BVH 测试
-        let useBVH: UInt32 = 1  // (gpuSpheres.count + gpuQuads.count >= 10) ? 1 : 0
-
-        var renderParams = GPURenderParams(
+        let renderParams = GPURenderParams(
             width: UInt32(camera.imageWidth),
             height: UInt32(camera.imageHeight),
             samplesPerPixel: samplesPerPixel,
@@ -71,25 +155,17 @@ class Renderer {
             quadCount: UInt32(gpuQuads.count),
             useBackground: useBackground,
             sampleOffset: 0,
-            useBVH: useBVH,
+            useBVH: 1,  // Always enabled
             bvhNodeCount: UInt32(bvh.nodes.count),
-            padding: 0
+            lightsCount: UInt32(scene.lights.count),
+            useMIS: 1  // Always enabled
         )
 
-        print("[Render] Resolution: \(camera.imageWidth)×\(camera.imageHeight)")
-        print("[Render] Samples: \(samplesPerPixel) spp")
-        print("[Render] Max depth: \(maxDepth)")
-        print("[Render] BVH: \(useBVH == 1 ? "Enabled" : "Disabled")")
-
-        // 执行渐进式渲染
-        print("[Render] Starting progressive GPU rendering...")
-
+        // 执行渐进式渲染（移除所有 debug 打印）
         let startTime = Date()
 
         let samplesPerBatch: UInt32 = UInt32(batchSize)
         let batchCount = (samplesPerPixel + samplesPerBatch - 1) / samplesPerBatch
-
-        print("[Render] Total batches: \(batchCount) × \(samplesPerBatch) spp")
 
         var cameraParams = camera.gpuParams
 
@@ -130,6 +206,8 @@ class Renderer {
             computeEncoder.setBuffer(buffers.perlinPermXBuffer, offset: 0, index: 10)
             computeEncoder.setBuffer(buffers.perlinPermYBuffer, offset: 0, index: 11)
             computeEncoder.setBuffer(buffers.perlinPermZBuffer, offset: 0, index: 12)
+            // 光源索引缓冲区（用于 MIS）
+            computeEncoder.setBuffer(buffers.lightIndexBuffer, offset: 0, index: 13)
 
             // 设置线程组大小
             let threadsPerGrid = MTLSize(width: camera.imageWidth, height: camera.imageHeight, depth: 1)
@@ -140,17 +218,13 @@ class Renderer {
             commandBuffer.commit()
             commandBuffer.waitUntilCompleted()
 
-            if (batch + 1) % 10 == 0 || batch == batchCount - 1 {
-                let progress = Float(batch + 1) / Float(batchCount) * 100
-                print("[Render] Progress: \(String(format: "%.1f", progress))% (\(batch + 1)/\(batchCount) batches)")
-            }
+            // 调用进度回调
+            progressCallback?(Int(batch))
         }
 
         let renderTime = Date().timeIntervalSince(startTime)
-        print("[Render] ✓ Completed in \(String(format: "%.2f", renderTime * 1000)) ms")
 
-        // 读取结果
-        print("[Output] Reading texture data...")
+        // 读取结果（不输出日志）
 
         let bytesPerPixel = 4 * MemoryLayout<Float>.size
         let bytesPerRow = camera.imageWidth * bytesPerPixel
@@ -164,7 +238,7 @@ class Renderer {
 
     // MARK: - 私有方法
 
-    private struct GPUBuffers {
+    struct GPUBuffers {
         let sphereBuffer: MTLBuffer
         let materialBuffer: MTLBuffer
         let quadBuffer: MTLBuffer
@@ -172,6 +246,7 @@ class Renderer {
         let transformBuffer: MTLBuffer
         let bvhNodeBuffer: MTLBuffer
         let geometryIndexBuffer: MTLBuffer
+        let lightIndexBuffer: MTLBuffer  // 光源索引缓冲区（用于 MIS）
         // Perlin 噪声数据 buffers
         let perlinRandvecBuffer: MTLBuffer
         let perlinPermXBuffer: MTLBuffer
@@ -179,13 +254,14 @@ class Renderer {
         let perlinPermZBuffer: MTLBuffer
     }
 
-    private func createBuffers(
+    func createBuffers(
         spheres: [GPUSphere],
         quads: [GPUQuad],
         materials: [GPUMaterial],
         textures: [GPUTexture],
         transforms: [GPUTransform],
-        bvh: FlatBVH
+        bvh: FlatBVH,
+        lights: [GPULightInfo]
     ) -> GPUBuffers? {
         guard let sphereBuffer = context.makeBuffer(array: spheres),
               let materialBuffer = context.makeBuffer(array: materials) else {
@@ -262,6 +338,22 @@ class Renderer {
             geometryIndexBuffer = buffer
         }
 
+        // 创建光源索引缓冲区（用于 MIS）
+        // 将 GPULightInfo 中的 geometryIndex 提取为 UInt32 数组
+        let lightIndices = lights.map { $0.geometryIndex }
+        let lightIndexBuffer: MTLBuffer
+        if lightIndices.isEmpty {
+            guard let buffer = context.device.makeBuffer(length: MemoryLayout<UInt32>.stride, options: []) else {
+                return nil
+            }
+            lightIndexBuffer = buffer
+        } else {
+            guard let buffer = context.makeBuffer(array: lightIndices) else {
+                return nil
+            }
+            lightIndexBuffer = buffer
+        }
+
         // 创建 Perlin 噪声数据缓冲区
         guard let perlinRandvecBuffer = context.makeBuffer(array: perlinData.randvec),
               let perlinPermXBuffer = context.makeBuffer(array: perlinData.permX),
@@ -278,6 +370,7 @@ class Renderer {
             transformBuffer: transformBuffer,
             bvhNodeBuffer: bvhNodeBuffer,
             geometryIndexBuffer: geometryIndexBuffer,
+            lightIndexBuffer: lightIndexBuffer,
             perlinRandvecBuffer: perlinRandvecBuffer,
             perlinPermXBuffer: perlinPermXBuffer,
             perlinPermYBuffer: perlinPermYBuffer,

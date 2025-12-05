@@ -13,13 +13,18 @@ func createCornellBoxScene() -> Scene {
     let whiteMaterial = Material.lambertian(albedo: SIMD3<Float>(0.73, 0.73, 0.73))
     let greenMaterial = Material.lambertian(albedo: SIMD3<Float>(0.12, 0.45, 0.15))
     let lightMaterial = Material.diffuseLight(emission: SIMD3<Float>(15, 15, 15))
-    let glassMaterial = Material.dielectric(refractionIndex: 1.5)
+    let mirrorMaterial = Material.metal(albedo: SIMD3<Float>(0.9, 0.9, 0.9), fuzz: 0.0)  // 镜面材质
+
+        // 玻璃材质
+    let glassMat = Material.dielectric(refractionIndex: 1.5)
+
 
     scene.materials.append(redMaterial)    // 0: 红色
     scene.materials.append(whiteMaterial)  // 1: 白色
     scene.materials.append(greenMaterial)  // 2: 绿色
     scene.materials.append(lightMaterial)  // 3: 光源
-    scene.materials.append(glassMaterial)  // 4: 玻璃
+    scene.materials.append(mirrorMaterial) // 4: 镜面
+    scene.materials.append(glassMat)       // 5: 玻璃
 
     // Cornell Box 墙壁（555x555x555 单位）
 
@@ -70,11 +75,13 @@ func createCornellBoxScene() -> Scene {
         sideB: SIMD3<Float>(0, 0, 105),
         materialIndex: 3
     ))
+    // 标记为光源（用于 MIS）
+    scene.markLastQuadAsLight()
 
     // 镜面盒子（6个quad组成，使用变换）
     // 镜面金属材质（全反射）
-    let mirrorMaterial = Material.metal(albedo: SIMD3<Float>(0.9, 0.9, 0.9), fuzz: 0.0)
-    scene.materials.append(mirrorMaterial)  // 5: 镜面材质
+    let mirrorMaterial2 = Material.metal(albedo: SIMD3<Float>(0.9, 0.9, 0.9), fuzz: 0.0)
+    scene.materials.append(mirrorMaterial2)  // 5: 镜面材质
 
     // 创建一个长方体 (100x180x100)，中心在原点
     // 高一些，这样倾斜后能更好地反射球体
@@ -103,7 +110,7 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMin.x, boxMin.y, boxMax.z),
         sideA: dx,
         sideB: dy,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
     // 右面 (x=max)
@@ -111,7 +118,7 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMax.x, boxMin.y, boxMax.z),
         sideA: -dz,
         sideB: dy,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
     // 后面 (z=min)
@@ -119,7 +126,7 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMax.x, boxMin.y, boxMin.z),
         sideA: -dx,
         sideB: dy,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
     // 左面 (x=min)
@@ -127,7 +134,7 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMin.x, boxMin.y, boxMin.z),
         sideA: dz,
         sideB: dy,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
     // 顶面 (y=max)
@@ -135,7 +142,7 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMin.x, boxMax.y, boxMax.z),
         sideA: dx,
         sideB: -dz,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
     // 底面 (y=min)
@@ -143,15 +150,15 @@ func createCornellBoxScene() -> Scene {
         corner: SIMD3<Float>(boxMin.x, boxMin.y, boxMin.z),
         sideA: dx,
         sideB: dz,
-        materialIndex: 5,
+        materialIndex: 4,
         transformIndex: boxTransformIndex
     ))
 
-    // 玻璃球
+    // 镜面球（金属材质）
     scene.add(Sphere(
         center: SIMD3<Float>(190, 90, 190),
         radius: 90,
-        materialIndex: 4
+        materialIndex: 5  // 使用镜面材质
     ))
 
     // 相机配置
@@ -165,6 +172,7 @@ func createCornellBoxScene() -> Scene {
     scene.camera.lookAt = SIMD3<Float>(278, 278, 0)
     scene.camera.vup = SIMD3<Float>(0, 1, 0)
     scene.camera.defocusAngle = 0  // 无景深
+    scene.camera.movementSpeed = 200.0  // Large scene (555 units): 10x default speed
 
     return scene
 }

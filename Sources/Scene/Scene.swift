@@ -5,14 +5,16 @@ import simd
 import Metal
 
 /// 场景容器
-/// 统一管理几何体、材质、纹理、变换和相机配置
+/// 统一管理几何体、材质、纹理、变换、光源和相机配置
 struct Scene {
     var geometry: GeometryList
     var materials: [Material]
     var textures: [GPUTexture]
-    var imageTextures: [MTLTexture]  // Metal 纹理数组（用于图片纹理）
-    var cpuTransforms: [Transform]   // CPU端Transform（用于BVH构建）
-    var transforms: [GPUTransform]   // GPU端Transform（用于渲染）
+    var imageTextures: [MTLTexture]      // Metal 纹理数组（用于图片纹理）
+    var imageTexturePaths: [String]      // 需要加载的图片纹理路径
+    var cpuTransforms: [Transform]       // CPU端Transform（用于BVH构建）
+    var transforms: [GPUTransform]       // GPU端Transform（用于渲染）
+    var lights: [GPULightInfo]           // 光源列表（用于 MIS）
     var camera: CameraConfig
 
     // MARK: - 初始化
@@ -22,8 +24,10 @@ struct Scene {
         self.materials = materials
         self.textures = textures
         self.imageTextures = imageTextures
+        self.imageTexturePaths = []
         self.cpuTransforms = []
         self.transforms = transforms
+        self.lights = []
         self.camera = camera
     }
 
@@ -32,8 +36,10 @@ struct Scene {
         self.materials = []
         self.textures = []
         self.imageTextures = []
+        self.imageTexturePaths = []
         self.cpuTransforms = []
         self.transforms = []
+        self.lights = []
         self.camera = CameraConfig()
     }
 
@@ -74,12 +80,40 @@ struct Scene {
         return index
     }
 
-    /// 添加图片纹理，返回图片纹理索引
+    /// 注册需要加载的图片纹理路径
+    /// - Parameter path: 图片文件名（例如 "earthmap.jpg"）
+    /// - Note: 实际加载在创建渲染器时执行
+    mutating func requireImageTexture(_ path: String) {
+        imageTexturePaths.append(path)
+    }
+
+    /// 添加已加载的图片纹理，返回图片纹理索引
     @discardableResult
     mutating func addImageTexture(_ texture: MTLTexture) -> Int32 {
         let index = Int32(imageTextures.count)
         imageTextures.append(texture)
         return index
+    }
+
+    /// 添加光源（用于 MIS）
+    /// - Parameters:
+    ///   - type: 光源类型（.quad 或 .sphere）
+    ///   - geometryIndex: 在对应几何数组中的索引
+    mutating func addLight(type: GPULightType, geometryIndex: UInt32) {
+        let light = GPULightInfo(type: type, geometryIndex: geometryIndex)
+        lights.append(light)
+    }
+
+    /// 将最后添加的 Quad 标记为光源（便捷方法）
+    mutating func markLastQuadAsLight() {
+        let quadIndex = UInt32(geometry.getQuads().count - 1)
+        addLight(type: .quad, geometryIndex: quadIndex)
+    }
+
+    /// 将最后添加的 Sphere 标记为光源（便捷方法）
+    mutating func markLastSphereAsLight() {
+        let sphereIndex = UInt32(geometry.getSpheres().count - 1)
+        addLight(type: .sphere, geometryIndex: sphereIndex)
     }
 
     // MARK: - GPU 数据转换
@@ -99,6 +133,7 @@ struct Scene {
         print("[Scene] Materials: \(materials.count)")
         print("[Scene] Textures: \(textures.count)")
         print("[Scene] Transforms: \(transforms.count)")
+        print("[Scene] Lights: \(lights.count) (for MIS)")
         print("[Scene] Camera: \(camera.imageWidth)×\(Int(Float(camera.imageWidth) / camera.aspectRatio)), \(camera.samplesPerPixel) spp")
     }
 }

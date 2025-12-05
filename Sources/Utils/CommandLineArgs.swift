@@ -8,12 +8,21 @@ struct CommandLineArgs {
     var sceneName: String = "bouncingSpheres"
     var mode: String = "image"  // "image" or "window"
     var outputFile: String = "output.ppm"
-    var spp: Int? = nil  // 总采样数，nil 表示使用场景默认值
-    var batchSize: Int = 10  // 每批 GPU 计算的采样数
-    var maxDepth: Int? = nil  // 最大反弹深度，nil 表示使用场景默认值
-    var width: Int? = nil  // 图像宽度，nil 表示使用场景默认值
-    var defocusAngle: Float? = nil  // 散焦角度（景深），nil 表示使用场景默认值
+    var spp: Int? = nil  // 总采样数，nil 表示使用默认值或场景值
+    var batchSize: Int? = nil  // 每批 GPU 计算的采样数，nil 表示使用默认值
+    var maxDepth: Int? = nil  // 最大反弹深度，nil 表示使用默认值或场景值
+    var width: Int? = nil  // 图像宽度，nil 表示使用默认值或场景值
+    var defocusAngle: Float? = nil  // 散焦角度（景深），nil 表示不使用景深
     var focusDist: Float? = nil  // 焦平面距离，nil 表示使用场景默认值或自动计算
+
+    // 获取实际的 batchSize（根据模式提供默认值）
+    func getEffectiveBatchSize() -> Int {
+        if let batchSize = batchSize {
+            return batchSize
+        }
+        // 默认值：image 模式 10，window 模式 1
+        return mode == "window" ? 1 : 10
+    }
 
     /// 打印帮助信息
     static func printHelp(programName: String) {

@@ -29,6 +29,9 @@ struct CameraConfig {
     var background: SIMD3<Float> = SIMD3<Float>(0, 0, 0)
     var useBackground: Bool = true
 
+    // MARK: - Camera Control
+    var movementSpeed: Float = 5.0  // Units per second (WASD/Space/Shift)
+
     // MARK: - Computed Properties
     var imageHeight: Int {
         max(1, Int(Float(imageWidth) / aspectRatio))
@@ -36,6 +39,13 @@ struct CameraConfig {
 
     /// Default configuration
     static let `default` = CameraConfig()
+}
+
+/// Camera change type classification
+enum CameraChangeType {
+    case none    // No change - keep accumulating
+    case minor   // Depth-of-field changes - weight decay
+    case major   // Position/direction/FOV changes - pre-render
 }
 
 /// Camera state tracker - detect camera movement for accumulation buffer reset
@@ -46,25 +56,24 @@ class CameraStateTracker {
         self.lastConfig = config
     }
 
-    /// Check if camera has moved
+    /// Check if camera has moved (legacy compatibility)
     func hasMoved(current: CameraConfig) -> Bool {
-        // Check position
-        if !vec3Equals(current.lookFrom, lastConfig.lookFrom) { return true }
+        return detectChange(current: current) != .none
+    }
 
-        // Check look direction
-        if !vec3Equals(current.lookAt, lastConfig.lookAt) { return true }
+    /// Detect camera change type
+    func detectChange(current: CameraConfig) -> CameraChangeType {
+        // Check major parameters (position, direction, FOV)
+        if !vec3Equals(current.lookFrom, lastConfig.lookFrom) { return .major }
+        if !vec3Equals(current.lookAt, lastConfig.lookAt) { return .major }
+        if !vec3Equals(current.vup, lastConfig.vup) { return .major }
+        if current.vfov != lastConfig.vfov { return .major }
 
-        // Check vup (lens roll)
-        if !vec3Equals(current.vup, lastConfig.vup) { return true }
+        // Check minor parameters (depth-of-field)
+        if current.defocusAngle != lastConfig.defocusAngle { return .minor }
+        if current.focusDist != lastConfig.focusDist { return .minor }
 
-        // Check FOV
-        if current.vfov != lastConfig.vfov { return true }
-
-        // Check defocus parameters
-        if current.defocusAngle != lastConfig.defocusAngle { return true }
-        if current.focusDist != lastConfig.focusDist { return true }
-
-        return false
+        return .none
     }
 
     /// Update tracked state

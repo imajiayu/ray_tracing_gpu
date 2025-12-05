@@ -130,7 +130,8 @@ struct RenderParams {
     uint sample_offset;   // 当前batch的样本偏移量
     uint use_bvh;         // 0 = 禁用 BVH, 1 = 启用 BVH
     uint bvh_node_count;  // BVH 节点数量
-    uint padding;         // 对齐
+    uint lights_count;    // 光源数量（用于 MIS）
+    uint use_mis;         // 0 = 禁用 MIS, 1 = 启用 MIS
 };
 
 #endif // TYPES_METAL

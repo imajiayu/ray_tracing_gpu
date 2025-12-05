@@ -33,7 +33,8 @@ func createFinalScene() -> Scene {
     let metalMat = Material.metal(albedo: SIMD3<Float>(0.8, 0.8, 0.9), fuzz: 1.0)
     let metalMatIdx = scene.addMaterial(metalMat)
 
-    // 地球纹理材质
+    // 地球纹理材质（注册图片路径，稍后自动加载）
+    scene.requireImageTexture("earthmap.jpg")
     let earthTexIdx = scene.addTexture(ImageTexture(path: "Resources/images/earthmap.jpg", index: 0))
     let earthMat = Material.lambertian(textureIndex: earthTexIdx)
     let earthMatIdx = scene.addMaterial(earthMat)
@@ -221,6 +222,7 @@ func createFinalScene() -> Scene {
     scene.camera.lookAt = SIMD3<Float>(278, 278, 0)
     scene.camera.vup = SIMD3<Float>(0, 1, 0)
     scene.camera.defocusAngle = 0
+    scene.camera.movementSpeed = 50.0  // Large scene (555 units): 10x default speed
 
     return scene
 }

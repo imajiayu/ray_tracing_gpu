@@ -109,6 +109,27 @@ struct GPUBVHNode {
     var splitAxis: UInt32       // 4 bytes (分割轴: 0=X, 1=Y, 2=Z)
 }  // Total: 48 bytes
 
+// MARK: - 光源管理
+
+/// 光源类型
+enum GPULightType: UInt32 {
+    case quad = 0
+    case sphere = 1
+}
+
+/// GPU 光源信息（16 bytes，对齐）
+struct GPULightInfo {
+    var type: UInt32           // 4 bytes - 光源类型（0=Quad, 1=Sphere）
+    var geometryIndex: UInt32  // 4 bytes - 在对应几何数组中的索引
+    var padding: SIMD2<Float>  // 8 bytes - 对齐到 16 bytes
+
+    init(type: GPULightType, geometryIndex: UInt32) {
+        self.type = type.rawValue
+        self.geometryIndex = geometryIndex
+        self.padding = SIMD2<Float>(0, 0)
+    }
+}  // Total: 16 bytes
+
 // MARK: - 渲染参数
 
 /// GPU 渲染参数
@@ -123,5 +144,6 @@ struct GPURenderParams {
     var sampleOffset: UInt32   // 当前batch的样本偏移量
     var useBVH: UInt32  // 0 = 禁用 BVH, 1 = 启用 BVH
     var bvhNodeCount: UInt32  // BVH 节点数量
-    var padding: UInt32  // 对齐到 44 bytes
+    var lightsCount: UInt32  // 光源数量（用于 MIS）
+    var useMIS: UInt32  // 0 = 禁用 MIS, 1 = 启用 MIS
 }

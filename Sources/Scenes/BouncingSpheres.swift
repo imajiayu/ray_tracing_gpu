@@ -91,6 +91,7 @@ func createBouncingSpheresScene() -> Scene {
     // focusDist 将自动计算为 lookFrom 到 lookAt 的距离
     scene.camera.focusDist = simd_length(scene.camera.lookFrom - scene.camera.lookAt)
     scene.camera.useBackground = true
+    scene.camera.movementSpeed = 5.0  // Small scene: default speed
 
     return scene
 }

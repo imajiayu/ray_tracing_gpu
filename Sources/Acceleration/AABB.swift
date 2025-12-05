@@ -161,10 +161,10 @@ fileprivate func applyRotation(_ transform: Transform, _ point: Point3) -> Point
 
     let m10 = sinPitch * sinYaw * cosRoll - cosPitch * sinRoll
     let m11 = sinPitch * sinYaw * sinRoll + cosPitch * cosRoll
-    let m12 = sinPitch * cosYaw
+    let m12 = -sinPitch * cosYaw
 
-    let m20 = -(cosPitch * sinYaw * cosRoll + sinPitch * sinRoll)
-    let m21 = -(cosPitch * sinYaw * sinRoll - sinPitch * cosRoll)
+    let m20 = -cosPitch * sinYaw * cosRoll - sinPitch * sinRoll
+    let m21 = -cosPitch * sinYaw * sinRoll + sinPitch * cosRoll
     let m22 = cosPitch * cosYaw
 
     // 应用旋转矩阵

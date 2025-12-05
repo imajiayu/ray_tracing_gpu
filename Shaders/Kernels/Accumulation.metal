@@ -8,16 +8,18 @@
 #include <metal_stdlib>
 using namespace metal;
 
-/// 累积渲染参数
+/// 累积渲染参数（必须与 Swift 端对齐）
 struct AccumulationParams {
-    bool is_first_frame;
+    uint is_first_frame;  // 0 或 1（UInt32 对齐）
     uint spp_per_frame;
     uint total_samples;
 };
 
 /// 累积内核 - 将新渲染帧累加到累积缓冲区
+/// 输入：raytrace_realtime 输出的平均值（每帧 1 spp）
+/// 输出：累积所有帧的累积值（未平均）
 kernel void accumulate_kernel(
-    texture2d<float, access::read> frame_texture [[texture(0)]],        // 新渲染的帧
+    texture2d<float, access::read> frame_texture [[texture(0)]],        // 新渲染的帧（平均值）
     texture2d<float, access::read_write> accumulation_texture [[texture(1)]], // 累积缓冲区
     constant AccumulationParams& params [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
@@ -27,11 +29,11 @@ kernel void accumulate_kernel(
         return;
     }
 
-    // 读取新渲染帧的颜色（已经是 spp_per_frame 个样本的平均）
+    // 读取新渲染帧的颜色（raytrace_realtime输出的是平均值）
     float4 frame_color = frame_texture.read(gid);
 
     if (params.is_first_frame) {
-        // 第一帧：直接写入累积缓冲区（乘以 spp）
+        // 第一帧：写入累积缓冲区（乘以 spp，转换为累积值）
         accumulation_texture.write(frame_color * float(params.spp_per_frame), gid);
     } else {
         // 后续帧：累加到累积缓冲区
