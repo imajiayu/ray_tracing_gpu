@@ -189,6 +189,45 @@ inline float diffuse_light_scattering_pdf(GPUMaterial mat, HitRecord rec, Ray r_
     return 0.0f;  // 发光材质不散射
 }
 
+// ========== Isotropic 各向同性散射材质 ==========
+
+/// Isotropic 散射（MIS 版本）
+/// 参考 ~/ray_tracing/include/materials/material.h:isotropic::scatter()
+/// 各向同性散射：向所有方向均匀散射
+inline bool isotropic_scatter_mis(
+    GPUMaterial mat,
+    device const GPUTexture* textures,
+    texture2d<float> image_texture,
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z,
+    Ray r_in,
+    HitRecord rec,
+    thread ScatterRecord* srec
+) {
+    // 获取反照率（支持纹理）
+    if (mat.texture_index >= 0) {
+        srec->attenuation = texture_value(textures[mat.texture_index], rec.u, rec.v, rec.p, image_texture,
+                                         perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z);
+    } else {
+        srec->attenuation = mat.albedo;
+    }
+
+    // 设置球面均匀 PDF（各向同性）
+    srec->pdf.type = PDF_SPHERE;
+    srec->skip_pdf = false;
+
+    return true;
+}
+
+/// Isotropic 散射 PDF 值
+/// 参考 ~/ray_tracing/include/materials/material.h:isotropic::scattering_pdf()
+/// 球面均匀分布：1 / (4π)
+inline float isotropic_scattering_pdf(HitRecord rec, Ray scattered) {
+    return 1.0f / (4.0f * M_PI_F);
+}
+
 // ========== 材质发光 ==========
 
 /// 材质发光函数（支持纹理）
@@ -252,6 +291,10 @@ inline bool material_scatter_mis(
             return dielectric_scatter_mis(mat, r_in, rec, srec, rng);
         case MaterialDiffuseLight:
             return diffuse_light_scatter_mis(mat, r_in, rec, srec);
+        case MaterialIsotropic:
+            return isotropic_scatter_mis(mat, textures, image_texture,
+                                        perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z,
+                                        r_in, rec, srec);
         default:
             return false;
     }
@@ -277,6 +320,8 @@ inline float material_scattering_pdf(
             return dielectric_scattering_pdf(mat, rec, r_in, scattered);
         case MaterialDiffuseLight:
             return diffuse_light_scattering_pdf(mat, rec, r_in, scattered);
+        case MaterialIsotropic:
+            return isotropic_scattering_pdf(rec, scattered);
         default:
             return 0.0f;
     }

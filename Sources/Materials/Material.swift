@@ -10,6 +10,7 @@ enum MaterialType: UInt32 {
     case metal = 1
     case dielectric = 2
     case diffuseLight = 3
+    case isotropic = 4
 }
 
 // MARK: - 材质结构
@@ -88,6 +89,30 @@ struct Material {
     static func diffuseLight(textureIndex: Int32) -> Material {
         return Material(
             type: .diffuseLight,
+            albedo: Color(0, 0, 0),
+            fuzz: 0,
+            refractionIndex: 1.0,
+            textureIndex: textureIndex,
+            emission: Color(0, 0, 0)
+        )
+    }
+
+    /// 创建 Isotropic 各向同性散射材质（固定颜色）
+    static func isotropic(albedo: Color) -> Material {
+        return Material(
+            type: .isotropic,
+            albedo: albedo,
+            fuzz: 0,
+            refractionIndex: 1.0,
+            textureIndex: -1,
+            emission: Color(0, 0, 0)
+        )
+    }
+
+    /// 创建 Isotropic 各向同性散射材质（纹理）
+    static func isotropic(textureIndex: Int32) -> Material {
+        return Material(
+            type: .isotropic,
             albedo: Color(0, 0, 0),
             fuzz: 0,
             refractionIndex: 1.0,

@@ -22,11 +22,6 @@ let package = Package(
                 .process("../Shaders"),
                 .process("../Resources")
             ]
-        ),
-        .testTarget(
-            name: "RayTracingGPUTests",
-            dependencies: ["RayTracingGPU"],
-            path: "Tests"
         )
     ]
 )

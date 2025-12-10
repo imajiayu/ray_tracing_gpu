@@ -38,14 +38,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
 
         // 获取场景
-        guard let sceneType = args.getSceneType() else {
+        guard args.sceneExists() else {
             ThreadSafeLogger.shared.logln("❌ Unknown scene: '\(args.sceneName)'")
-            ThreadSafeLogger.shared.logln("Available scenes: bouncingSpheres, cornellBox, textureTest, finalScene")
+            let available = CommandLineArgs.getAvailableScenes().joined(separator: ", ")
+            ThreadSafeLogger.shared.logln("Available scenes: \(available)")
             NSApplication.shared.terminate(nil)
             return
         }
 
-        var scene = createScene(type: sceneType)
+        guard var scene = SceneRegistry.create(name: args.sceneName) else {
+            ThreadSafeLogger.shared.logln("❌ Failed to create scene: '\(args.sceneName)'")
+            NSApplication.shared.terminate(nil)
+            return
+        }
 
         // 应用命令行参数覆盖
         applyCommandLineArgs(args: args, scene: &scene)
@@ -263,7 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 scene: scene,
                 mtkView: mtkView,
                 device: device,
-                sceneType: sceneType,
+                sceneName: args.sceneName,
                 batchSize: batchSize
             )
 
@@ -359,12 +364,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // 4. 创建场景
-        guard let sceneType = args.getSceneType() else {
+        guard args.sceneExists() else {
             ThreadSafeLogger.shared.logln("❌ Unknown scene: '\(args.sceneName)'")
+            let available = CommandLineArgs.getAvailableScenes().joined(separator: ", ")
+            ThreadSafeLogger.shared.logln("Available scenes: \(available)")
             exit(1)
         }
 
-        var scene = createScene(type: sceneType)
+        guard var scene = SceneRegistry.create(name: args.sceneName) else {
+            ThreadSafeLogger.shared.logln("❌ Failed to create scene: '\(args.sceneName)'")
+            exit(1)
+        }
 
         // 应用命令行参数覆盖
         applyCommandLineArgs(args: args, scene: &scene)
@@ -437,23 +447,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 12. 打印总结
         stats.printSummary(renderTime: renderTime)
 
+        ThreadSafeLogger.shared.logln("")
         ThreadSafeLogger.shared.logln("✅ Output: \(args.outputFile)")
     }
 
     // MARK: - Helper Methods
-
-    func createScene(type: SceneType) -> Scene {
-        switch type {
-        case .bouncingSpheres:
-            return createBouncingSpheresScene()
-        case .cornellBox:
-            return createCornellBoxScene()
-        case .textureTest:
-            return createTextureTestScene()
-        case .finalScene:
-            return createFinalScene()
-        }
-    }
 
     func applyCommandLineArgs(args: CommandLineArgs, scene: inout Scene) {
         // 优先级：用户输入 > 场景设定值 > 统一默认值

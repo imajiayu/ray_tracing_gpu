@@ -4,6 +4,9 @@
 import Foundation
 import AppKit
 
+// 加载所有场景（必须在使用场景之前调用）
+SceneLoader.loadAllScenes()
+
 // 检查是否为窗口模式
 let args = CommandLine.arguments
 let isWindowMode = args.contains("--mode") && args.contains("window") || !args.contains("--mode")

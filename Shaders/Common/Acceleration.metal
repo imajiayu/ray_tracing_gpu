@@ -70,7 +70,8 @@ inline bool bvh_hit(
     Ray r,
     float t_min,
     float t_max,
-    thread HitRecord* rec
+    thread HitRecord* rec,
+    thread RandomState* rng
 ) {
     const int MAX_STACK_SIZE = 64;
     const int MAX_ITERATIONS = 1000;  // 防止无限循环
@@ -110,8 +111,8 @@ inline bool bvh_hit(
                 bool hit = false;
 
                 if (geom_idx < sphere_count) {
-                    // Sphere
-                    hit = sphere_hit(spheres[geom_idx], transforms, r, t_min, closest_so_far, &temp_rec);
+                    // Sphere (支持体积雾)
+                    hit = sphere_hit_constant_medium(spheres[geom_idx], transforms, r, t_min, closest_so_far, &temp_rec, rng);
                 } else {
                     // Quad
                     uint quad_idx = geom_idx - sphere_count;

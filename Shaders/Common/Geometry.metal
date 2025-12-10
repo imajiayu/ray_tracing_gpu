@@ -109,6 +109,103 @@ inline bool sphere_hit(
     return true;
 }
 
+// ========== Constant Medium 体积雾相交测试 ==========
+
+/// 光线-体积雾球体相交测试
+/// 参考 ~/ray_tracing/include/geometry/constant_medium.h
+inline bool sphere_hit_constant_medium(
+    GPUSphere sphere,
+    device const GPUTransform* transforms,
+    Ray r,
+    float t_min,
+    float t_max,
+    thread HitRecord* rec,
+    thread RandomState* rng
+) {
+    // 检查是否为体积雾（neg_inv_density != 0）
+    if (sphere.neg_inv_density == 0.0f) {
+        return sphere_hit(sphere, transforms, r, t_min, t_max, rec);
+    }
+
+    // CPU版本的关键优化：AABB预检查（constant_medium.h:22-25）
+    // 如果光线在[t_min, t_max]范围内不击中AABB，直接返回
+    // 这避免了BVH遍历顺序导致的不一致
+    {
+        float3 box_min = sphere.center - sphere.radius;
+        float3 box_max = sphere.center + sphere.radius;
+        float3 inv_dir = 1.0f / r.direction;
+        float3 t0 = (box_min - r.origin) * inv_dir;
+        float3 t1 = (box_max - r.origin) * inv_dir;
+        float3 tmin = min(t0, t1);
+        float3 tmax = max(t0, t1);
+        float t_enter = max(max(tmin.x, tmin.y), max(tmin.z, t_min));
+        float t_exit = min(min(tmax.x, tmax.y), min(tmax.z, t_max));
+
+        if (t_enter > t_exit) {
+            return false; // AABB不相交，快速拒绝
+        }
+    }
+
+    // 找到光线进入和离开边界的两个交点
+    HitRecord rec1, rec2;
+
+    // 第一次相交
+    if (!sphere_hit(sphere, transforms, r, -1e10f, 1e10f, &rec1)) {
+        return false;
+    }
+
+    // 第二次相交
+    bool has_second_hit = sphere_hit(sphere, transforms, r, rec1.t + 0.001f, 1e10f, &rec2);
+
+    if (!has_second_hit) {
+        // 只找到一个交点：光线起点在球内
+        rec2 = rec1;
+        rec1.t = 0.0f;
+    }
+
+    // 裁剪到有效范围（入口）
+    if (rec1.t < 0.0f) rec1.t = 0.0f;
+    if (rec1.t < t_min) rec1.t = t_min;
+
+    // ⚠️ 关键修复：不裁剪rec2.t到t_max！
+    // 体积雾的散射概率应该只取决于完整的体积段，不受其他物体影响
+    // 我们在后面判断散射点是否比t_max更近
+
+    if (rec1.t >= rec2.t) {
+        return false;
+    }
+
+    // 计算光线在边界内的距离
+    float ray_length = length(r.direction);
+    float distance_inside_boundary = (rec2.t - rec1.t) * ray_length;
+
+    // 概率性光线行进
+    float hit_distance = sphere.neg_inv_density * log(random_float(rng));
+
+    if (hit_distance > distance_inside_boundary) {
+        return false;
+    }
+
+    // 计算散射点
+    float scatter_t = rec1.t + hit_distance / ray_length;
+
+    // 如果散射点比已知的最近物体更远，拒绝散射
+    if (scatter_t > t_max) {
+        return false;
+    }
+
+    // 记录散射点
+    rec->t = scatter_t;
+    rec->p = ray_at(r, rec->t);
+    rec->normal = float3(1, 0, 0);
+    rec->front_face = true;
+    rec->material_index = sphere.isotropic_mat_index;
+    rec->u = 0.0f;
+    rec->v = 0.0f;
+
+    return true;
+}
+
 // ========== Quad 相交测试 ==========
 
 /// 光线-Quad(矩形)相交测试（支持变换）

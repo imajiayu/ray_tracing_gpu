@@ -59,16 +59,16 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
     var hudRenderer: HUDRenderer?
     var hudVisible: Bool = true                       // HUD 显示状态
 
-    let sceneType: SceneType
+    let sceneName: String
 
     // MARK: - 公开接口
     var currentSampleCount: Int { return sampleCount }
     var currentFPS: Double { return fpsSmooth }
 
-    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneType: SceneType, batchSize: Int = 1) throws {
+    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneName: String, batchSize: Int = 1) throws {
         self.device = device
         self.scene = scene
-        self.sceneType = sceneType
+        self.sceneName = sceneName
         self.batchSize = batchSize
         self.initialBatchSize = batchSize
 

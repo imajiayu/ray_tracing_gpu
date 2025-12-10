@@ -263,8 +263,22 @@ class Renderer {
         bvh: FlatBVH,
         lights: [GPULightInfo]
     ) -> GPUBuffers? {
-        guard let sphereBuffer = context.makeBuffer(array: spheres),
-              let materialBuffer = context.makeBuffer(array: materials) else {
+        // 创建 Sphere 缓冲区（如果有）
+        let sphereBuffer: MTLBuffer
+        if spheres.isEmpty {
+            guard let buffer = context.device.makeBuffer(length: MemoryLayout<GPUSphere>.stride, options: []) else {
+                return nil
+            }
+            sphereBuffer = buffer
+        } else {
+            guard let buffer = context.makeBuffer(array: spheres) else {
+                return nil
+            }
+            sphereBuffer = buffer
+        }
+
+        // 创建材质缓冲区
+        guard let materialBuffer = context.makeBuffer(array: materials) else {
             return nil
         }
 

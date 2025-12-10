@@ -54,12 +54,12 @@ inline float3 ray_color(
         HitRecord rec;
         bool hit_anything = false;
 
-        // 使用 BVH 加速光线相交测试
+        // 使用 BVH 加速光线相交测试（支持体积雾）
         hit_anything = bvh_hit(
             bvh_nodes, geometry_indices,
             spheres, quads, transforms,
             sphere_count,
-            current_ray, 0.001f, 1e10f, &rec
+            current_ray, 0.001f, 1e10f, &rec, rng
         );
 
         if (hit_anything) {

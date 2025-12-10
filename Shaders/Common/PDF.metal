@@ -87,7 +87,8 @@ enum PDFType : uint {
     PDF_COSINE = 0,      // 余弦加权半球采样 (Lambertian BRDF)
     PDF_HITTABLE = 1,    // 光源采样 (Next Event Estimation)
     PDF_MIXTURE = 2,     // 混合采样 (MIS)
-    PDF_SPECULAR = 3     // 镜面反射采样 (Metal fuzz)
+    PDF_SPECULAR = 3,    // 镜面反射采样 (Metal fuzz)
+    PDF_SPHERE = 4       // 球面均匀采样 (Isotropic scattering)
 };
 
 // ========== 统一 PDF 结构 ==========
@@ -244,6 +245,21 @@ inline float3 specular_pdf_generate(float3 reflected_dir, float fuzz, thread Ran
     return normalize(direction);
 }
 
+// ========== SpherePDF - 球面均匀采样 ==========
+
+/// 球面均匀 PDF 值计算
+/// 参考: ~/ray_tracing/include/sampling/pdf.h:sphere_pdf
+/// 各向同性散射：均匀分布在单位球面，PDF = 1/(4π)
+inline float sphere_pdf_value() {
+    return 1.0f / (4.0f * M_PI_F);
+}
+
+/// 球面均匀 PDF 生成方向
+/// 参考: ~/ray_tracing/include/sampling/pdf.h:sphere_pdf::generate()
+inline float3 sphere_pdf_generate(thread RandomState* rng) {
+    return random_unit_vector(rng);
+}
+
 // ========== 通用 PDF 接口函数 ==========
 
 // 前向声明（用于 mixture_pdf 递归调用）
@@ -341,6 +357,9 @@ inline float pdf_value(
         case PDF_SPECULAR:
             return specular_pdf_value(pdf.w, pdf.fuzz, direction);
 
+        case PDF_SPHERE:
+            return sphere_pdf_value();
+
         case PDF_MIXTURE:
             // mixture_pdf 需要存储两个子 PDF
             // 暂不支持嵌套 mixture（Phase 4 限制）
@@ -380,6 +399,9 @@ inline float3 pdf_generate(
 
         case PDF_SPECULAR:
             return specular_pdf_generate(pdf.w, pdf.fuzz, rng);
+
+        case PDF_SPHERE:
+            return sphere_pdf_generate(rng);
 
         case PDF_MIXTURE:
             // 暂不支持

@@ -31,7 +31,7 @@ struct CommandLineArgs {
 
         选项:
           --scene <name>        场景选择 (默认: bouncingSpheres)
-                                可选: bouncingSpheres, cornellBox, textureTest
+                                可选: bouncingSpheres, cornellBox, finalScene
           --mode <mode>         渲染模式 (默认: image)
                                 可选: image (离线渲染), window (实时窗口)
           --output <file>       输出文件 (默认: output.ppm)
@@ -181,19 +181,13 @@ struct CommandLineArgs {
         return args
     }
 
-    /// 获取场景类型
-    func getSceneType() -> SceneType? {
-        switch sceneName {
-        case "bouncingSpheres":
-            return .bouncingSpheres
-        case "cornellBox":
-            return .cornellBox
-        case "textureTest":
-            return .textureTest
-        case "finalScene":
-            return .finalScene
-        default:
-            return nil
-        }
+    /// 检查场景是否存在
+    func sceneExists() -> Bool {
+        return SceneRegistry.exists(name: sceneName)
+    }
+
+    /// 获取可用场景列表
+    static func getAvailableScenes() -> [String] {
+        return SceneRegistry.availableScenes()
     }
 }

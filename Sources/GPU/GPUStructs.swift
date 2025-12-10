@@ -19,14 +19,15 @@ struct GPUTransform {
 
 // MARK: - 几何体
 
-/// GPU 球体（48 bytes 对齐，支持变换）
+/// GPU 球体（48 bytes 对齐，支持变换和体积雾）
 struct GPUSphere {
     var center: SIMD3<Float>    // 12 bytes
     var radius: Float           // 4 bytes
     var materialIndex: UInt32   // 4 bytes
     var transformIndex: Int32   // 4 bytes (-1 = 无变换)
-    var padding: SIMD2<Float>   // 8 bytes
-}  // Total: 32 bytes -> 48 bytes
+    var negInvDensity: Float    // 4 bytes (体积雾: -1/density, 0 = 非体积)
+    var isotropicMatIndex: UInt32 // 4 bytes (体积雾材质索引, 0xFFFFFFFF = 无)
+}  // Total: 32 bytes + 8 bytes padding to 48 bytes
 
 /// GPU Quad 四边形（支持变换）
 struct GPUQuad {

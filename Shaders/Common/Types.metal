@@ -36,13 +36,14 @@ struct GPUTransform {
 
 // ========== 几何体 ==========
 
-/// GPU 球体（支持变换，48 bytes）
+/// GPU 球体（支持变换和体积雾，32 bytes）
 struct GPUSphere {
     float3 center;              // 12 bytes
     float radius;               // 4 bytes
     uint material_index;        // 4 bytes
     int transform_index;        // 4 bytes (-1 = 无变换)
-    float2 padding;             // 8 bytes
+    float neg_inv_density;      // 4 bytes (体积雾: -1/density, 0 = 非体积)
+    uint isotropic_mat_index;   // 4 bytes (体积雾材质索引, 0xFFFFFFFF = 无)
 };  // Total: 32 bytes
 
 /// GPU Quad 四边形（支持变换，112 bytes）
@@ -88,7 +89,8 @@ enum MaterialType : uint {
     MaterialLambertian = 0,
     MaterialMetal = 1,
     MaterialDielectric = 2,
-    MaterialDiffuseLight = 3
+    MaterialDiffuseLight = 3,
+    MaterialIsotropic = 4
 };
 
 /// GPU 材质（与 Swift GPUMaterial 对齐）
