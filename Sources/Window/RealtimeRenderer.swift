@@ -61,16 +61,28 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
 
     let sceneName: String
 
+    // MARK: - Tone Mapping
+    let tonemapMode: TonemapMode
+
+    // MARK: - Bloom
+    var bloomRenderer: BloomRenderer?
+    var bloomTexture: MTLTexture?  // Bloom 处理后的纹理
+
+    // MARK: - Filter
+    let filterType: FilterType
+
     // MARK: - 公开接口
     var currentSampleCount: Int { return sampleCount }
     var currentFPS: Double { return fpsSmooth }
 
-    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneName: String, batchSize: Int = 1) throws {
+    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneName: String, batchSize: Int = 1, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0, filterType: FilterType = .box) throws {
         self.device = device
         self.scene = scene
         self.sceneName = sceneName
         self.batchSize = batchSize
         self.initialBatchSize = batchSize
+        self.tonemapMode = tonemapMode
+        self.filterType = filterType
 
         // 初始化 Metal 上下文
         guard let ctx = MetalContext() else {
@@ -179,6 +191,16 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
             // HUD 是可选的，渲染器仍然可以工作
         }
 
+        // 创建 Bloom 渲染器（如果启用）
+        if bloomStrength > 0.0 {
+            self.bloomRenderer = BloomRenderer(device: device, library: library, bloomThreshold: bloomThreshold, bloomStrength: bloomStrength)
+            if bloomRenderer != nil {
+                print("[Bloom] ✓ Enabled (strength: \(bloomStrength), threshold: \(bloomThreshold))")
+            } else {
+                print("[Bloom] ⚠️  Failed to initialize, disabling Bloom")
+            }
+        }
+
         // 初始化输入控制器
         self.inputController = InputController(config: scene.camera)
 
@@ -231,7 +253,8 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
             sphereCount: sphereCount,
             quadCount: quadCount,
             batchSize: batchSize,
-            sampleOffset: UInt32(sampleCount)
+            sampleOffset: UInt32(sampleCount),
+            filterType: filterType
         ) else {
             return
         }
@@ -239,10 +262,34 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
         // 7. 累积当前帧到累积纹理
         accumulateFrame(currentFrameTexture: renderedTexture, targetTexture: accumulationTexture)
 
-        // 8. 将累积纹理显示到屏幕
-        displayTexture(texture: accumulationTexture, drawable: drawable)
+        // 8. 应用 Bloom 效果（如果启用）
+        let textureToDisplay: MTLTexture
+        if let bloomRenderer = bloomRenderer, let commandBuffer = commandQueue.makeCommandBuffer() {
+            // 创建临时纹理用于存储 Bloom 结果
+            if bloomTexture == nil || bloomTexture!.width != accumulationTexture.width {
+                let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .rgba32Float,
+                    width: accumulationTexture.width,
+                    height: accumulationTexture.height,
+                    mipmapped: false
+                )
+                descriptor.usage = [.shaderRead, .shaderWrite]
+                descriptor.storageMode = .private
+                bloomTexture = device.makeTexture(descriptor: descriptor)
+            }
 
-        // 9. 更新 FPS 统计
+            bloomRenderer.applyBloom(inputTexture: accumulationTexture, outputTexture: bloomTexture!, commandBuffer: commandBuffer)
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            textureToDisplay = bloomTexture!
+        } else {
+            textureToDisplay = accumulationTexture
+        }
+
+        // 9. 将纹理显示到屏幕
+        displayTexture(texture: textureToDisplay, drawable: drawable)
+
+        // 10. 更新 FPS 统计
         updateFPS(deltaTime: deltaTime)
         frameCount += 1
     }
@@ -288,6 +335,9 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
 
         var sampleCountFloat = Float(max(sampleCount, 1))  // 至少为 1 避免除零
         renderEncoder.setFragmentBytes(&sampleCountFloat, length: MemoryLayout<Float>.size, index: 0)
+
+        var tonemapModeInt = Int32(tonemapMode == .aces ? 1 : 0)
+        renderEncoder.setFragmentBytes(&tonemapModeInt, length: MemoryLayout<Int32>.size, index: 1)
 
         renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
 

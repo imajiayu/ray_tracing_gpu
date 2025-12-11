@@ -134,6 +134,19 @@ struct RenderParams {
     uint bvh_node_count;  // BVH 节点数量
     uint lights_count;    // 光源数量（用于 MIS）
     uint use_mis;         // 0 = 禁用 MIS, 1 = 启用 MIS
+    uint sqrt_spp;        // sqrt(samples_per_pixel) - 分层采样网格大小
+    uint filter_type;     // 像素重建滤波器类型 (0=box, 1=tent, 2=gaussian, 3=mitchell, 4=lanczos)
+    float recip_sqrt_spp; // 1.0 / sqrt_spp - 避免 GPU 除法
+    float3 padding2;      // 对齐填充
+};
+
+// 滤波器类型枚举
+enum FilterType : uint {
+    FILTER_BOX = 0,
+    FILTER_TENT = 1,
+    FILTER_GAUSSIAN = 2,
+    FILTER_MITCHELL = 3,
+    FILTER_LANCZOS = 4
 };
 
 #endif // TYPES_METAL

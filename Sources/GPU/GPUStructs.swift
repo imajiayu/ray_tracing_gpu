@@ -147,4 +147,8 @@ struct GPURenderParams {
     var bvhNodeCount: UInt32  // BVH 节点数量
     var lightsCount: UInt32  // 光源数量（用于 MIS）
     var useMIS: UInt32  // 0 = 禁用 MIS, 1 = 启用 MIS
+    var sqrtSpp: UInt32  // sqrt(samplesPerPixel) - 分层采样网格大小
+    var filterType: UInt32  // 像素重建滤波器类型 (0=box, 1=tent, 2=gaussian, 3=mitchell, 4=lanczos)
+    var recipSqrtSpp: Float  // 1.0 / sqrtSpp - 避免 GPU 除法
+    var padding2: SIMD3<Float>  // 对齐填充
 }

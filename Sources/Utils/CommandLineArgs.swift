@@ -3,17 +3,29 @@
 
 import Foundation
 
+/// Tone Mapping 模式
+enum TonemapMode: String {
+    case none = "none"  // 硬截断（向后兼容）
+    case aces = "aces"  // ACES Filmic
+}
+
 /// 命令行参数结构
 struct CommandLineArgs {
-    var sceneName: String = "bouncingSpheres"
+    var sceneName: String = "bouncingSpheres"  // 默认场景（通常是索引 0）
     var mode: String = "image"  // "image" or "window"
     var outputFile: String = "output.ppm"
     var spp: Int? = nil  // 总采样数，nil 表示使用默认值或场景值
     var batchSize: Int? = nil  // 每批 GPU 计算的采样数，nil 表示使用默认值
     var maxDepth: Int? = nil  // 最大反弹深度，nil 表示使用默认值或场景值
     var width: Int? = nil  // 图像宽度，nil 表示使用默认值或场景值
+    var vfov: Float? = nil  // 视野角度（FOV），nil 表示使用场景配置
     var defocusAngle: Float? = nil  // 散焦角度（景深），nil 表示不使用景深
     var focusDist: Float? = nil  // 焦平面距离，nil 表示使用场景默认值或自动计算
+    var useBackground: Bool? = nil  // 是否使用天空背景，nil 表示使用场景配置
+    var tonemapMode: TonemapMode = .none  // Tone Mapping 模式，默认 none（向后兼容）
+    var bloomStrength: Float = 0.0  // Bloom 强度，0.0 = 关闭，0.1-0.5 = 推荐
+    var bloomThreshold: Float = 1.0  // Bloom 亮度阈值，默认 1.0
+    var filterType: FilterType = .box  // 像素重建滤波器，默认 box（均匀平均）
 
     // 获取实际的 batchSize（根据模式提供默认值）
     func getEffectiveBatchSize() -> Int {
@@ -26,32 +38,141 @@ struct CommandLineArgs {
 
     /// 打印帮助信息
     static func printHelp(programName: String) {
+        // 获取所有可用场景
+        let scenes = getAvailableScenes()
+
         print("""
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║         Ray Tracing GPU - Metal 光线追踪渲染器                  ║
+        ╚══════════════════════════════════════════════════════════════════╝
+
         用法: \(programName) [选项]
 
-        选项:
-          --scene <name>        场景选择 (默认: bouncingSpheres)
-                                可选: bouncingSpheres, cornellBox, finalScene
-          --mode <mode>         渲染模式 (默认: image)
-                                可选: image (离线渲染), window (实时窗口)
-          --output <file>       输出文件 (默认: output.ppm)
-          --spp <num>           总采样数 (默认: 使用场景配置)
-          --batch-size <num>    每批 GPU 计算的采样数 (默认: 10)
-          --max-depth <num>     最大光线反弹深度 (默认: 使用场景配置)
-          --width <num>         图像宽度 (默认: 使用场景配置)
-          --defocus-angle <deg> 散焦角度（景深效果，单位：度）(默认: 使用场景配置)
-          --focus-dist <dist>   焦平面距离 (默认: 自动计算为相机到焦点距离)
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 渲染模式                                                         │
+        └──────────────────────────────────────────────────────────────────┘
+          --mode <mode>         渲染模式
+                                  image  - 离线图片渲染 (输出 PPM 文件)
+                                  window - 实时窗口预览 (60 FPS 交互)
+                                  系统默认: image
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 场景选择                                                         │
+        └──────────────────────────────────────────────────────────────────┘
+          --scene <name|num>    场景名称或编号
+                                  系统默认: 0 (bouncingSpheres)
+        """)
+
+        // 动态列出所有场景（带编号）
+        for (index, scene) in scenes.enumerated() {
+            let marker = index == 0 ? " (默认)" : ""
+            print("                                  \(index) - \(scene)\(marker)")
+        }
+
+        print("""
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 渲染质量 (优先级: 用户设置 > 场景配置 > 系统默认)              │
+        └──────────────────────────────────────────────────────────────────┘
+          --spp <num>           总采样数
+                                  推荐: 10-100 (预览), 500-1000 (高质量)
+                                  系统默认: image 模式 1000, window 模式无限累积
+          --max-depth <num>     光线最大反弹深度
+                                  推荐: 10-50
+                                  系统默认: 50
+          --batch-size <num>    每批 GPU 采样数
+                                  window 模式: 1-8 (影响帧率和质量)
+                                  系统默认: image 模式 10, window 模式 1
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 相机参数 (优先级: 用户设置 > 场景配置 > 系统默认)              │
+        └──────────────────────────────────────────────────────────────────┘
+          --width <num>         图像宽度 (像素)
+                                  系统默认: 1024
+          --vfov <degrees>      相机视野角度 (度)
+                                  推荐: 广角 90-120, 标准 40-60, 长焦 10-30
+                                  系统默认: 使用场景配置 (通常 40° 或 90°)
+          --defocus-angle <deg> 景深散焦角度 (度)
+                                  0 = 无景深, 0.5-2.0 = 适度景深
+                                  系统默认: 使用场景配置 (通常为 0)
+          --focus-dist <dist>   焦平面距离
+                                  系统默认: 使用场景配置 (自动计算)
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 渲染选项 (优先级: 用户设置 > 场景配置)                         │
+        └──────────────────────────────────────────────────────────────────┘
+          --background          启用天空背景渐变
+          --no-background       禁用天空背景 (纯黑背景)
+                                  系统默认: 使用场景配置 (通常开启)
+                                  适用: 室外场景用 --background, 室内场景用 --no-background
+          --tonemap <mode>      Tone Mapping 模式
+                                  none - 硬截断 (当前默认，向后兼容)
+                                  aces - ACES Filmic (好莱坞标准，保留高光细节)
+                                  系统默认: none
+          --bloom <strength>    Bloom 光晕强度 (0.0-1.0)
+                                  0.0 = 关闭 (默认), 0.2-0.3 = 推荐
+                                  注意: 开启 Bloom 会自动启用 ACES Tone Mapping
+                                  系统默认: 0.0
+          --bloom-threshold <val> Bloom 亮度阈值 (0.5-2.0)
+                                  只有亮度超过此值的像素才产生光晕
+                                  系统默认: 1.0
+          --filter <type>         像素重建滤波器
+                                  box      - 均匀平均 (最快，默认)
+                                  tent     - 三角形/锥形 (平滑)
+                                  gaussian - 高斯 (自然)
+                                  mitchell - Mitchell-Netravali (平衡)
+                                  lanczos  - Lanczos (最高质量)
+                                  系统默认: box
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 输出选项 (仅限 image 模式)                                      │
+        └──────────────────────────────────────────────────────────────────┘
+          --output <file>       输出文件路径
+                                  系统默认: output.ppm
+
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ 其他                                                             │
+        └──────────────────────────────────────────────────────────────────┘
           --help, -h            显示此帮助信息
 
-        示例:
-          # 使用默认参数渲染 bouncingSpheres 场景
-          \(programName)
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║ 使用示例                                                         ║
+        ╚══════════════════════════════════════════════════════════════════╝
 
-          # 渲染 Cornell Box，500 采样，输出到自定义文件
-          \(programName) --scene cornellBox --spp 500 --output cornell.ppm
+        # 1. 快速预览（使用场景编号）
+        \(programName) --mode window --scene 0
+        \(programName) --mode window --scene 1 --width 800
 
-          # 高质量渲染，1000 采样，更大分辨率
-          \(programName) --scene bouncingSpheres --spp 1000 --width 1920 --max-depth 50
+        # 2. 离线渲染（默认模式）
+        \(programName) --scene cornellBox --spp 100
+        \(programName) --scene 2 --spp 500 --output final.ppm
+
+        # 3. 高质量渲染
+        \(programName) --scene 1 --spp 1000 --width 1920 --max-depth 50
+
+        # 4. 实时窗口 + 高质量
+        \(programName) --mode window --scene cornellBox --batch-size 4
+
+        # 5. 景深效果
+        \(programName) --scene finalScene --defocus-angle 0.6 --spp 200
+
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║ 实时窗口控制 (--mode window)                                    ║
+        ╚══════════════════════════════════════════════════════════════════╝
+          Left Click     - 捕获鼠标 (启用相机控制)
+          ESC            - 释放鼠标 / 退出
+          WASD           - 移动相机 (前后左右)
+          Space/Shift    - 上升/下降
+          Mouse          - 环顾视角
+          Q/E            - 相机滚转
+          Wheel          - 调节焦距
+          +/-            - 调节景深光圈
+          1/2/3/4        - 质量预设 (1/2/4/8 spp/frame)
+          Tab            - 切换 HUD 显示
+
+        ═══════════════════════════════════════════════════════════════════
+        版本: v7.0 | 文档: docs/ | 问题反馈: GitHub Issues
+        ═══════════════════════════════════════════════════════════════════
 
         """)
     }
@@ -75,7 +196,21 @@ struct CommandLineArgs {
                     print("错误: --scene 需要参数")
                     return nil
                 }
-                args.sceneName = arguments[i + 1]
+                let sceneArg = arguments[i + 1]
+
+                // 支持数字索引（如 "0", "1", "2"）
+                if let sceneIndex = Int(sceneArg) {
+                    let availableScenes = getAvailableScenes()
+                    guard sceneIndex >= 0 && sceneIndex < availableScenes.count else {
+                        print("错误: 场景编号 \(sceneIndex) 无效，可用编号: 0-\(availableScenes.count - 1)")
+                        print("使用 --help 查看所有可用场景")
+                        return nil
+                    }
+                    args.sceneName = availableScenes[sceneIndex]
+                } else {
+                    // 使用场景名称
+                    args.sceneName = sceneArg
+                }
                 i += 2
 
             case "--mode":
@@ -147,6 +282,18 @@ struct CommandLineArgs {
                 args.width = value
                 i += 2
 
+            case "--vfov":
+                guard i + 1 < arguments.count else {
+                    print("错误: --vfov 需要参数")
+                    return nil
+                }
+                guard let value = Float(arguments[i + 1]), value > 0 && value <= 180 else {
+                    print("错误: --vfov 必须在 0-180 度之间")
+                    return nil
+                }
+                args.vfov = value
+                i += 2
+
             case "--defocus-angle":
                 guard i + 1 < arguments.count else {
                     print("错误: --defocus-angle 需要参数")
@@ -171,11 +318,78 @@ struct CommandLineArgs {
                 args.focusDist = value
                 i += 2
 
+            case "--background":
+                args.useBackground = true
+                i += 1
+
+            case "--no-background":
+                args.useBackground = false
+                i += 1
+
+            case "--tonemap":
+                guard i + 1 < arguments.count else {
+                    print("错误: --tonemap 需要参数")
+                    return nil
+                }
+                let modeStr = arguments[i + 1]
+                guard let mode = TonemapMode(rawValue: modeStr) else {
+                    print("错误: --tonemap 必须是 'none' 或 'aces'")
+                    return nil
+                }
+                args.tonemapMode = mode
+                i += 2
+
+            case "--bloom":
+                guard i + 1 < arguments.count else {
+                    print("错误: --bloom 需要参数")
+                    return nil
+                }
+                guard let value = Float(arguments[i + 1]), value >= 0 && value <= 1.0 else {
+                    print("错误: --bloom 必须在 0.0-1.0 之间")
+                    return nil
+                }
+                args.bloomStrength = value
+                i += 2
+
+            case "--bloom-threshold":
+                guard i + 1 < arguments.count else {
+                    print("错误: --bloom-threshold 需要参数")
+                    return nil
+                }
+                guard let value = Float(arguments[i + 1]), value >= 0.5 && value <= 2.0 else {
+                    print("错误: --bloom-threshold 必须在 0.5-2.0 之间")
+                    return nil
+                }
+                args.bloomThreshold = value
+                i += 2
+
+            case "--filter":
+                guard i + 1 < arguments.count else {
+                    print("错误: --filter 需要参数")
+                    return nil
+                }
+                let filterStr = arguments[i + 1]
+                guard let filter = FilterType(rawValue: filterStr) else {
+                    print("错误: --filter 必须是以下值之一:")
+                    for f in FilterType.allCases {
+                        print("  - \(f.rawValue): \(f.description)")
+                    }
+                    return nil
+                }
+                args.filterType = filter
+                i += 2
+
             default:
                 print("错误: 未知参数 '\(arg)'")
                 print("使用 --help 查看帮助信息")
                 return nil
             }
+        }
+
+        // 自动启用 ACES Tone Mapping（当 Bloom 开启时）
+        if args.bloomStrength > 0.0 && args.tonemapMode == .none {
+            args.tonemapMode = .aces
+            print("ℹ️  Bloom 已开启，自动启用 ACES Tone Mapping")
         }
 
         return args

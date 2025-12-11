@@ -269,7 +269,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 mtkView: mtkView,
                 device: device,
                 sceneName: args.sceneName,
-                batchSize: batchSize
+                batchSize: batchSize,
+                tonemapMode: args.tonemapMode,
+                bloomStrength: args.bloomStrength,
+                bloomThreshold: args.bloomThreshold,
+                filterType: args.filterType
             )
 
             // 设置代理
@@ -429,22 +433,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             camera: camera,
             bvh: bvh,
             batchSize: batchSize,
+            filterType: args.filterType,
             progressCallback: { batch in
                 stats.updateProgress(batch: batch, samplesPerBatch: batchSize)
             }
         )
 
-        // 11. 保存结果
-        var mutablePixelData = pixelData
+        // 11. 应用 Bloom 效果（如果启用）
+        var finalPixelData = pixelData
+        if args.bloomStrength > 0.0 {
+            finalPixelData = applyBloomToPixelData(
+                pixelData: pixelData,
+                width: camera.imageWidth,
+                height: camera.imageHeight,
+                spp: UInt32(totalBatches),  // GPU 端已归一化，这里传递 batch 数量
+                bloomStrength: args.bloomStrength,
+                bloomThreshold: args.bloomThreshold,
+                context: context,
+                library: library
+            )
+        }
+
+        // 12. 保存结果
+        // GPU 端每个 batch 已经归一化（除以了 sqrt_spp * sqrt_spp）
+        // 纹理中累积的是多个 batch 的平均值之和，所以需要除以 batch 数量
+        var mutablePixelData = finalPixelData
         ImageWriter.averageAndSavePPM(
             accumulatedPixels: &mutablePixelData,
-            samplesPerPixel: scene.camera.samplesPerPixel,
+            samplesPerPixel: UInt32(totalBatches),
             width: camera.imageWidth,
             height: camera.imageHeight,
-            filename: args.outputFile
+            filename: args.outputFile,
+            tonemapMode: args.tonemapMode
         )
 
-        // 12. 打印总结
+        // 13. 打印总结
         stats.printSummary(renderTime: renderTime)
 
         ThreadSafeLogger.shared.logln("")
@@ -452,6 +475,112 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Helper Methods
+
+    /// 对离线渲染的像素数据应用 Bloom 效果（GPU 加速）
+    func applyBloomToPixelData(
+        pixelData: [Float],
+        width: Int,
+        height: Int,
+        spp: UInt32,
+        bloomStrength: Float,
+        bloomThreshold: Float,
+        context: MetalContext,
+        library: MTLLibrary
+    ) -> [Float] {
+        print("[Bloom] 应用 Bloom 效果到离线渲染...")
+
+        guard let bloomRenderer = BloomRenderer(
+            device: context.device,
+            library: library,
+            bloomThreshold: bloomThreshold,
+            bloomStrength: bloomStrength
+        ) else {
+            print("[Bloom] ⚠️  无法创建 BloomRenderer，跳过 Bloom")
+            return pixelData
+        }
+
+        // 1. 创建输入纹理并上传累积数据（已累积，未平均）
+        let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        inputDescriptor.usage = [.shaderRead, .shaderWrite]
+        inputDescriptor.storageMode = .shared  // 需要 CPU 访问
+
+        guard let inputTexture = context.device.makeTexture(descriptor: inputDescriptor) else {
+            print("[Bloom] ⚠️  无法创建输入纹理")
+            return pixelData
+        }
+
+        // 平均累积数据（Bloom 需要已平均的 HDR 数据）
+        var averagedData = pixelData
+        let sppFloat = Float(spp)
+        for i in 0..<averagedData.count {
+            averagedData[i] /= sppFloat
+        }
+
+        // 上传平均后的数据到纹理
+        let bytesPerRow = width * 4 * MemoryLayout<Float>.size
+        inputTexture.replace(
+            region: MTLRegionMake2D(0, 0, width, height),
+            mipmapLevel: 0,
+            withBytes: averagedData,
+            bytesPerRow: bytesPerRow
+        )
+
+        // 2. 创建输出纹理
+        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        outputDescriptor.usage = [.shaderRead, .shaderWrite]
+        outputDescriptor.storageMode = .shared
+
+        guard let outputTexture = context.device.makeTexture(descriptor: outputDescriptor) else {
+            print("[Bloom] ⚠️  无法创建输出纹理")
+            return pixelData
+        }
+
+        // 3. 执行 Bloom
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            print("[Bloom] ⚠️  无法创建命令缓冲区")
+            return pixelData
+        }
+
+        bloomRenderer.applyBloom(
+            inputTexture: inputTexture,
+            outputTexture: outputTexture,
+            commandBuffer: commandBuffer
+        )
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        // 4. 从输出纹理下载数据
+        var outputData = [Float](repeating: 0, count: width * height * 4)
+        outputTexture.getBytes(
+            &outputData,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegionMake2D(0, 0, width, height),
+            mipmapLevel: 0
+        )
+
+        // 5. 将数据乘回实际采样数（因为 ImageWriter 会再次平均）
+        // 注意：分层采样会调整为完全平方数
+        let sqrtSpp = UInt32(sqrt(Double(spp)))
+        let actualSpp = sqrtSpp * sqrtSpp
+        let actualSppFloat = Float(actualSpp)
+        for i in 0..<outputData.count {
+            outputData[i] *= actualSppFloat
+        }
+
+        print("[Bloom] ✓ Bloom 应用完成")
+        return outputData
+    }
 
     func applyCommandLineArgs(args: CommandLineArgs, scene: inout Scene) {
         // 优先级：用户输入 > 场景设定值 > 统一默认值
@@ -484,7 +613,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             scene.camera.maxDepth = 50
         }
 
-        // 4. Defocus Angle（景深）
+        // 4. VFov (视野角度)
+        // 优先级：用户输入 > 场景值
+        if let vfov = args.vfov {
+            scene.camera.vfov = vfov
+        }
+        // 如果用户没有指定，保持场景的原始值
+
+        // 5. Defocus Angle（景深）
         // 优先级：用户输入 > 场景值 > 默认值 0（无景深）
         if let defocusAngle = args.defocusAngle {
             scene.camera.defocusAngle = defocusAngle
@@ -492,10 +628,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 如果用户没有指定，保持场景的原始值（可能是 0 或其他值）
         // 例如：BouncingSpheres 场景默认有 defocusAngle = 0.6
 
-        // 5. Focus Distance
+        // 6. Focus Distance
         // 优先级：用户输入 > 场景值
         if let focusDist = args.focusDist {
             scene.camera.focusDist = focusDist
+        }
+        // 如果用户没有指定，保持场景的原始值
+
+        // 7. Background（天空背景）
+        // 优先级：用户输入 > 场景值
+        if let useBackground = args.useBackground {
+            scene.camera.useBackground = useBackground
         }
         // 如果用户没有指定，保持场景的原始值
     }

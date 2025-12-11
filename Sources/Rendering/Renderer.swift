@@ -35,7 +35,8 @@ class Renderer {
         sphereCount: Int,
         quadCount: Int,
         batchSize: Int = 1,
-        sampleOffset: UInt32 = 0
+        sampleOffset: UInt32 = 0,
+        filterType: FilterType = .box
     ) -> MTLTexture? {
         // 创建输出纹理
         guard let outputTexture = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight) else {
@@ -47,10 +48,15 @@ class Renderer {
         let maxDepth = scene.camera.maxDepth
         let useBackground: UInt32 = scene.camera.useBackground ? 1 : 0
 
+        // 计算分层采样参数
+        let sqrtSpp = UInt32(sqrt(Double(samplesPerPixel)))
+        let recipSqrtSpp = Float(1.0) / Float(sqrtSpp)
+        let actualSamplesPerPixel = sqrtSpp * sqrtSpp  // 实际采样数（完全平方数）
+
         var renderParams = GPURenderParams(
             width: UInt32(camera.imageWidth),
             height: UInt32(camera.imageHeight),
-            samplesPerPixel: samplesPerPixel,
+            samplesPerPixel: actualSamplesPerPixel,
             maxDepth: maxDepth,
             sphereCount: UInt32(sphereCount),
             quadCount: UInt32(quadCount),
@@ -59,7 +65,11 @@ class Renderer {
             useBVH: 1,
             bvhNodeCount: UInt32(bvh.nodes.count),
             lightsCount: UInt32(scene.lights.count),
-            useMIS: 1
+            useMIS: 1,
+            sqrtSpp: sqrtSpp,
+            filterType: filterType.gpuValue,
+            recipSqrtSpp: recipSqrtSpp,
+            padding2: SIMD3<Float>(0, 0, 0)
         )
 
         var cameraParams = camera.gpuParams
@@ -111,6 +121,7 @@ class Renderer {
     ///   - camera: 相机
     ///   - bvh: BVH 加速结构
     ///   - batchSize: 每批次的采样数
+    ///   - filterType: 像素重建滤波器类型
     ///   - progressCallback: 进度回调（batch index）
     /// - Returns: 渲染后的像素数据
     func render(
@@ -118,6 +129,7 @@ class Renderer {
         camera: Camera,
         bvh: FlatBVH,
         batchSize: Int,
+        filterType: FilterType = .box,
         progressCallback: ((Int) -> Void)? = nil
     ) -> (pixels: [Float], renderTime: TimeInterval) {
         // 转换为 GPU 数据
@@ -146,10 +158,15 @@ class Renderer {
         let maxDepth = scene.camera.maxDepth
         let useBackground: UInt32 = scene.camera.useBackground ? 1 : 0
 
+        // 计算分层采样参数（注意：这是总采样数，会在批次循环中重新计算）
+        let sqrtSppTotal = UInt32(sqrt(Double(samplesPerPixel)))
+        let recipSqrtSppTotal = Float(1.0) / Float(sqrtSppTotal)
+        let actualSamplesPerPixel = sqrtSppTotal * sqrtSppTotal  // 实际采样数（完全平方数）
+
         let renderParams = GPURenderParams(
             width: UInt32(camera.imageWidth),
             height: UInt32(camera.imageHeight),
-            samplesPerPixel: samplesPerPixel,
+            samplesPerPixel: actualSamplesPerPixel,
             maxDepth: maxDepth,
             sphereCount: UInt32(gpuSpheres.count),
             quadCount: UInt32(gpuQuads.count),
@@ -158,7 +175,11 @@ class Renderer {
             useBVH: 1,  // Always enabled
             bvhNodeCount: UInt32(bvh.nodes.count),
             lightsCount: UInt32(scene.lights.count),
-            useMIS: 1  // Always enabled
+            useMIS: 1,  // Always enabled
+            sqrtSpp: sqrtSppTotal,
+            filterType: filterType.gpuValue,
+            recipSqrtSpp: recipSqrtSppTotal,
+            padding2: SIMD3<Float>(0, 0, 0)
         )
 
         // 执行渐进式渲染（移除所有 debug 打印）
@@ -173,8 +194,15 @@ class Renderer {
             let currentBatchSamples = min(samplesPerBatch, samplesPerPixel - batch * samplesPerBatch)
 
             var batchParams = renderParams
-            batchParams.samplesPerPixel = currentBatchSamples
+
+            // 重新计算当前批次的分层采样参数
+            let batchSqrtSpp = UInt32(sqrt(Double(currentBatchSamples)))
+            let actualBatchSamples = batchSqrtSpp * batchSqrtSpp  // 实际采样数
+
+            batchParams.samplesPerPixel = actualBatchSamples
             batchParams.sampleOffset = batch * samplesPerBatch
+            batchParams.sqrtSpp = batchSqrtSpp
+            batchParams.recipSqrtSpp = Float(1.0) / Float(batchSqrtSpp)
 
             guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
                 fatalError("Failed to create command buffer")

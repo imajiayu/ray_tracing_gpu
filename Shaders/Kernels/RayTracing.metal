@@ -7,6 +7,7 @@
 #include "../Common/Geometry.metal"
 #include "../Common/Materials.metal"
 #include "../Common/Acceleration.metal"
+#include "../Common/Filter.metal"
 using namespace metal;
 
 // ========== 背景颜色 ==========
@@ -210,27 +211,36 @@ kernel void raytrace(
     }
 
     float3 pixel_color = float3(0.0f);
+    float total_weight = 0.0f;  // 累积权重（用于滤波器归一化）
 
-    // 多重采样抗锯齿
-    for (uint s = 0; s < params.samples_per_pixel; s++) {
-        // 为每个采样初始化独立的随机数种子
-        // 使用像素坐标、采样索引、batch偏移量和质数来生成更好的种子分布
-        uint global_sample_index = params.sample_offset + s;
-        uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
-        RandomState rng = random_init(seed);
-        // 生成光线（与 CPU 版本完全一致）
-        // camera.lower_left_corner 是 pixel00 的中心位置
-        // camera.horizontal 是 pixel_delta_u（每个像素的 X 增量）
-        // camera.vertical 是 pixel_delta_v（每个像素的 Y 增量）
+    // 分层采样抗锯齿（Stratified Sampling）+ 像素重建滤波器
+    // 将像素分成 sqrt_spp × sqrt_spp 的网格，在每个子格子内随机采样
+    // 参考 ~/ray_tracing/include/camera/camera.h:269-274
+    for (uint s_j = 0; s_j < params.sqrt_spp; s_j++) {
+        for (uint s_i = 0; s_i < params.sqrt_spp; s_i++) {
+            // 为每个采样初始化独立的随机数种子
+            // 使用像素坐标、子格子索引、batch偏移量和质数来生成更好的种子分布
+            uint subpixel_index = s_j * params.sqrt_spp + s_i;
+            uint global_sample_index = params.sample_offset + subpixel_index;
+            uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
+            RandomState rng = random_init(seed);
 
-        // 随机偏移（抗锯齿）
-        float offset_x = random_float(&rng);
-        float offset_y = random_float(&rng);
+            // 分层采样：在子格子 (s_i, s_j) 内随机采样
+            // 像素采样偏移范围 [0, 1]，用于像素位置计算
+            float px_offset = (float(s_i) + random_float(&rng)) * params.recip_sqrt_spp;
+            float py_offset = (float(s_j) + random_float(&rng)) * params.recip_sqrt_spp;
 
-        // 像素采样位置 = pixel00 + i * delta_u + j * delta_v + random_offset
-        float3 pixel_sample = camera.lower_left_corner +
-                             (float(gid.x) + offset_x) * camera.horizontal +
-                             (float(gid.y) + offset_y) * camera.vertical;
+            // 滤波器权重参数范围 [-0.5, 0.5]，相对于像素中心的偏移
+            float px_filter = px_offset - 0.5f;
+            float py_filter = py_offset - 0.5f;
+
+            // 计算滤波器权重（基于采样点到像素中心的距离）
+            float filter_weight = evaluate_filter(params.filter_type, px_filter, py_filter);
+
+            // 像素采样位置 = pixel00 + (i + offset_x) * delta_u + (j + offset_y) * delta_v
+            float3 pixel_sample = camera.lower_left_corner +
+                                 (float(gid.x) + px_offset) * camera.horizontal +
+                                 (float(gid.y) + py_offset) * camera.vertical;
 
         // 计算光线起点（景深效果）
         float3 ray_origin = camera.origin;
@@ -259,13 +269,22 @@ kernel void raytrace(
         if (color.g != color.g) color.g = 0.0f;
         if (color.b != color.b) color.b = 0.0f;
 
-        pixel_color += color;
+        // 使用滤波器权重累积颜色
+        pixel_color += color * filter_weight;
+        total_weight += filter_weight;
+        }
+    }
+
+    // 归一化：除以总权重（而不是采样数）
+    if (total_weight > 0.0f) {
+        pixel_color /= total_weight;
     }
 
     // 读取之前累积的颜色（离线模式：多批次累积；窗口模式：新纹理，初始为0）
     float4 prev_color = output.read(gid);
 
-    // 累积新的采样（不做平均，在最后一批才平均）
+    // 累积新的采样（已经归一化为平均值）
+    // 注意：这里累积的是归一化后的颜色，不再是原始累积
     float3 accumulated = prev_color.rgb + pixel_color;
 
     // 最终 NaN 检查（防止累积错误）
@@ -304,22 +323,34 @@ kernel void raytrace_realtime(
     }
 
     float3 pixel_color = float3(0.0f);
+    float total_weight = 0.0f;  // 累积权重（用于滤波器归一化）
 
-    // 多重采样抗锯齿
-    for (uint s = 0; s < params.samples_per_pixel; s++) {
-        // 为每个采样初始化独立的随机数种子
-        uint global_sample_index = params.sample_offset + s;
-        uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
-        RandomState rng = random_init(seed);
+    // 分层采样抗锯齿（Stratified Sampling）+ 像素重建滤波器
+    // 将像素分成 sqrt_spp × sqrt_spp 的网格，在每个子格子内随机采样
+    for (uint s_j = 0; s_j < params.sqrt_spp; s_j++) {
+        for (uint s_i = 0; s_i < params.sqrt_spp; s_i++) {
+            // 为每个采样初始化独立的随机数种子
+            uint subpixel_index = s_j * params.sqrt_spp + s_i;
+            uint global_sample_index = params.sample_offset + subpixel_index;
+            uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
+            RandomState rng = random_init(seed);
 
-        // 随机偏移（抗锯齿）
-        float offset_x = random_float(&rng);
-        float offset_y = random_float(&rng);
+            // 分层采样：在子格子 (s_i, s_j) 内随机采样
+            // 像素采样偏移范围 [0, 1]，用于像素位置计算
+            float px_offset = (float(s_i) + random_float(&rng)) * params.recip_sqrt_spp;
+            float py_offset = (float(s_j) + random_float(&rng)) * params.recip_sqrt_spp;
 
-        // 像素采样位置
-        float3 pixel_sample = camera.lower_left_corner +
-                             (float(gid.x) + offset_x) * camera.horizontal +
-                             (float(gid.y) + offset_y) * camera.vertical;
+            // 滤波器权重参数范围 [-0.5, 0.5]，相对于像素中心的偏移
+            float px_filter = px_offset - 0.5f;
+            float py_filter = py_offset - 0.5f;
+
+            // 计算滤波器权重（基于采样点到像素中心的距离）
+            float filter_weight = evaluate_filter(params.filter_type, px_filter, py_filter);
+
+            // 像素采样位置
+            float3 pixel_sample = camera.lower_left_corner +
+                                 (float(gid.x) + px_offset) * camera.horizontal +
+                                 (float(gid.y) + py_offset) * camera.vertical;
 
         // 计算光线起点（景深效果）
         float3 ray_origin = camera.origin;
@@ -347,11 +378,18 @@ kernel void raytrace_realtime(
         if (color.g != color.g) color.g = 0.0f;
         if (color.b != color.b) color.b = 0.0f;
 
-        pixel_color += color;
+        // 使用滤波器权重累积颜色
+        pixel_color += color * filter_weight;
+        total_weight += filter_weight;
+        }
     }
 
     // 计算平均颜色（窗口模式：输出平均值，由外部累积器累加）
-    float3 averaged = pixel_color / float(params.samples_per_pixel);
+    // 归一化：除以总权重（而不是采样数）
+    float3 averaged = float3(0.0f);
+    if (total_weight > 0.0f) {
+        averaged = pixel_color / total_weight;
+    }
 
     // 最终 NaN 检查
     if (averaged.r != averaged.r) averaged.r = 0.0f;

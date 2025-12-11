@@ -1,12 +1,23 @@
 // ImageWriter.swift
 // 图像输出工具
+// Phase 7 - ACES Tone Mapping 支持
 
 import Foundation
 
 /// 图像写入器
 class ImageWriter {
+    /// ACES Filmic Tone Mapping (Narkowicz 2015)
+    private static func acesTonemap(_ x: Float) -> Float {
+        let a: Float = 2.51
+        let b: Float = 0.03
+        let c: Float = 2.43
+        let d: Float = 0.59
+        let e: Float = 0.14
+        let result = (x * (a * x + b)) / (x * (c * x + d) + e)
+        return min(max(result, 0), 1)  // saturate
+    }
     /// 保存为 PPM 图片
-    static func savePPM(pixels: [Float], width: Int, height: Int, filename: String) {
+    static func savePPM(pixels: [Float], width: Int, height: Int, filename: String, tonemapMode: TonemapMode = .none) {
         var ppmContent = "P3\n\(width) \(height)\n255\n"
 
         for y in 0..<height {
@@ -21,6 +32,18 @@ class ImageWriter {
                 if r.isNaN { r = 0.0 }
                 if g.isNaN { g = 0.0 }
                 if b.isNaN { b = 0.0 }
+
+                // Tone Mapping (HDR → LDR)
+                if tonemapMode == .aces {
+                    r = acesTonemap(r)
+                    g = acesTonemap(g)
+                    b = acesTonemap(b)
+                } else {
+                    // 硬截断（向后兼容）
+                    r = min(max(r, 0), 1)
+                    g = min(max(g, 0), 1)
+                    b = min(max(b, 0), 1)
+                }
 
                 // Gamma 校正 (gamma = 2)
                 let rGamma = sqrt(r)
@@ -45,13 +68,13 @@ class ImageWriter {
     }
 
     /// 对累积的颜色进行平均并应用 Gamma 校正
-    static func averageAndSavePPM(accumulatedPixels: inout [Float], samplesPerPixel: UInt32, width: Int, height: Int, filename: String) {
+    static func averageAndSavePPM(accumulatedPixels: inout [Float], samplesPerPixel: UInt32, width: Int, height: Int, filename: String, tonemapMode: TonemapMode = .none) {
         // 对累积的颜色进行平均
         let totalSamples = Float(samplesPerPixel)
         for i in 0..<(width * height * 4) {
             accumulatedPixels[i] /= totalSamples
         }
 
-        savePPM(pixels: accumulatedPixels, width: width, height: height, filename: filename)
+        savePPM(pixels: accumulatedPixels, width: width, height: height, filename: filename, tonemapMode: tonemapMode)
     }
 }
