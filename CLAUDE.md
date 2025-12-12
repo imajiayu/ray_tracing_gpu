@@ -19,11 +19,11 @@
 - ✅ **多重重要性采样**: Power Heuristic MIS
 - ✅ **实时交互**: FPS 相机控制 + 累积渲染
 - ✅ **后处理效果**: ACES Tone Mapping + Bloom 光晕
-- ✅ **高级抗锯齿**: 分层采样 + 5 种像素重建滤波器
+- ✅ **高级抗锯齿**: 分层采样 + 5 种像素重建滤波器 + 蓝噪声采样
 
 ---
 
-## 当前状态 (Phase 1-8 已完成)
+## 当前状态 (Phase 1-9 已完成)
 
 ### 渲染功能
 
@@ -38,6 +38,7 @@
 - PCG 随机数生成器
 - 分层采样抗锯齿 (Stratified Sampling)
 - 像素重建滤波器 (5 种)
+- 蓝噪声采样 (R2 低差异序列)
 
 **材质系统**:
 - Lambertian (余弦加权漫反射)
@@ -205,6 +206,48 @@ swift run raytracer --mode window --scene cornellBox --filter gaussian
 
 ---
 
+## Phase 9: 蓝噪声采样 ✅ 已完成
+
+### 实现内容
+
+实现了基于 R2 低差异序列的蓝噪声采样，替代伪随机采样：
+
+**1. R2 低差异序列** ✅
+- 使用黄金比例 (φ = 1.618...) 生成均匀分布的 2D 采样点
+- 公式：`R2(n) = fract(n * (1/φ, 1/φ²))`
+- 优点：无需预生成纹理，计算成本极低，序列质量高
+
+**2. 蓝噪声采样** ✅
+- 在 R2 序列基础上添加小范围抖动 (±0.01)
+- 避免完全固定的采样模式，保持随机性
+- 命令行参数：`--blue-noise`（默认关闭）
+
+**3. 技术特性**
+- **双模式支持**: 离线图片渲染 + 实时窗口模式
+- **向后兼容**: 默认使用伪随机采样
+- **性能开销**: < 15%（主要来自额外的 hash 计算）
+
+### 适用场景
+
+- **低 spp 渲染** (1-16 spp): 噪点分布更均匀，视觉质量提升明显
+- **实时预览**: 窗口模式下 1-8 spp/frame 效果更好
+- **快速预览**: 离线模式快速预览（4-16 spp）
+
+### 使用方法
+
+```bash
+# 离线渲染 - 启用蓝噪声
+swift run raytracer --scene cornellBox --spp 4 --blue-noise
+
+# 实时窗口 - 启用蓝噪声
+swift run raytracer --mode window --scene cornellBox --blue-noise
+
+# 默认行为（伪随机采样）
+swift run raytracer --scene cornellBox --spp 100  # 不加 --blue-noise
+```
+
+---
+
 ## 待实现功能 (Future Roadmap)
 
 ### 体积渲染
@@ -230,15 +273,12 @@ swift run raytracer --mode window --scene cornellBox --filter gaussian
 ### 抗锯齿与降噪
 - [x] 分层采样 (Stratified Sampling) ✅ Phase 8
 - [x] 像素重建滤波器 (Box/Tent/Gaussian/Mitchell/Lanczos) ✅ Phase 8
+- [x] 蓝噪声采样 (Blue Noise Sampling - R2 序列) ✅ Phase 9
 - [ ] 自适应采样 (Adaptive Sampling) ⭐⭐⭐⭐⭐
   - 基于像素方差动态调整采样数
   - 高方差区域（边缘、细节）→ 多采样
   - 低方差区域（纯色、平滑）→ 少采样
   - 预期节省 30-60% 渲染时间
-- [ ] 蓝噪声采样 (Blue Noise Sampling) ⭐⭐⭐⭐
-  - 替代伪随机采样，使用预生成的蓝噪声纹理
-  - 低 spp (1-4) 下视觉质量显著提升
-  - 噪点分布更均匀，几乎无性能损失
 - [ ] A-Trous Wavelet 降噪 ⭐⭐⭐⭐
   - 后处理空间降噪滤波器
   - 适合低 spp (1-16)，保留边缘
@@ -476,9 +516,9 @@ swift run raytracer \
 
 ---
 
-**文档版本**: v8.0
+**文档版本**: v9.0
 **最后更新**: 2025-12-11
-**当前状态**: Phase 1-8 ✅ 全部完成
+**当前状态**: Phase 1-9 ✅ 全部完成
 
 **项目里程碑**:
 - Phase 1-3: 基础渲染器 (GPU 路径追踪 + BVH + 材质纹理)
@@ -486,18 +526,18 @@ swift run raytracer \
 - Phase 5: SAH-BVH + Power Heuristic (39.5% 性能提升)
 - Phase 6: 实时窗口模式 (60 FPS 交互 + 累积渲染)
 - Phase 7: 后处理效果 (ACES Tone Mapping + Bloom)
-- Phase 8: 高级抗锯齿 (分层采样 + 5 种滤波器) - ✅ 已完成
+- Phase 8: 高级抗锯齿 (分层采样 + 5 种滤波器)
+- Phase 9: 蓝噪声采样 (R2 序列) - ✅ 已完成
 
 **下一步计划**:
-- Phase 9: 自适应采样 (预期节省 30-60% 渲染时间)
-- Phase 10: 蓝噪声采样 (低 spp 视觉质量提升)
+- Phase 10: 自适应采样 (预期节省 30-60% 渲染时间)
 
 **技术成就**:
-- ✅ 纯 Swift/Metal 实现 (~7700 行代码)
+- ✅ 纯 Swift/Metal 实现 (~7800 行代码)
 - ✅ 双渲染模式 (离线 + 实时)
 - ✅ 完整的物理材质和纹理系统
 - ✅ SAH-BVH 加速结构
 - ✅ Power Heuristic MIS
 - ✅ FPS 相机控制 + HUD 显示
 - ✅ 好莱坞级后处理 (ACES + Bloom)
-- ✅ 高级抗锯齿 (分层采样 + 5 种滤波器)
+- ✅ 高级抗锯齿 (分层采样 + 5 种滤波器 + 蓝噪声)

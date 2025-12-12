@@ -273,7 +273,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 tonemapMode: args.tonemapMode,
                 bloomStrength: args.bloomStrength,
                 bloomThreshold: args.bloomThreshold,
-                filterType: args.filterType
+                filterType: args.filterType,
+                useBlueNoise: args.useBlueNoise
             )
 
             // 设置代理
@@ -293,7 +294,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 width: windowWidth,
                 height: windowHeight,
                 batchSize: batchSize,
-                cameraConfig: scene.camera
+                cameraConfig: scene.camera,
+                filterType: args.filterType,
+                useBlueNoise: args.useBlueNoise,
+                tonemapMode: args.tonemapMode,
+                bloomStrength: args.bloomStrength,
+                bloomThreshold: args.bloomThreshold
             )
             stats.printHeader(
                 sphereCount: gpuSpheres.count,
@@ -383,6 +389,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 应用命令行参数覆盖
         applyCommandLineArgs(args: args, scene: &scene)
 
+        // 生成默认输出文件名（如果用户未指定 --output）
+        var outputFilename = args.outputFile
+        if outputFilename == "output.ppm" {
+            // 用户未指定输出文件名，使用自动生成的文件名
+            outputFilename = args.generateDefaultOutputFilename(scene: scene)
+            ThreadSafeLogger.shared.logln("ℹ️  Auto-generated output filename: \(outputFilename)")
+        }
+
         // 5. 加载图片纹理（自动根据场景需求加载）
         let imageLoader = ImageLoader(device: context.device)
         for imagePath in scene.imageTexturePaths {
@@ -415,7 +429,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             spp: Int(scene.camera.samplesPerPixel),
             maxDepth: Int(scene.camera.maxDepth),
             totalBatches: totalBatches,
-            cameraConfig: scene.camera
+            cameraConfig: scene.camera,
+            filterType: args.filterType,
+            useBlueNoise: args.useBlueNoise,
+            tonemapMode: args.tonemapMode,
+            bloomStrength: args.bloomStrength,
+            bloomThreshold: args.bloomThreshold
         )
 
         // 打印头部信息
@@ -434,6 +453,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             bvh: bvh,
             batchSize: batchSize,
             filterType: args.filterType,
+            useBlueNoise: args.useBlueNoise,
             progressCallback: { batch in
                 stats.updateProgress(batch: batch, samplesPerBatch: batchSize)
             }
@@ -463,7 +483,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             samplesPerPixel: UInt32(totalBatches),
             width: camera.imageWidth,
             height: camera.imageHeight,
-            filename: args.outputFile,
+            filename: outputFilename,
             tonemapMode: args.tonemapMode
         )
 
@@ -471,7 +491,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stats.printSummary(renderTime: renderTime)
 
         ThreadSafeLogger.shared.logln("")
-        ThreadSafeLogger.shared.logln("✅ Output: \(args.outputFile)")
+        ThreadSafeLogger.shared.logln("✅ Output: \(outputFilename)")
     }
 
     // MARK: - Helper Methods

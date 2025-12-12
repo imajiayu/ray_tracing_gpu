@@ -26,6 +26,7 @@ struct CommandLineArgs {
     var bloomStrength: Float = 0.0  // Bloom 强度，0.0 = 关闭，0.1-0.5 = 推荐
     var bloomThreshold: Float = 1.0  // Bloom 亮度阈值，默认 1.0
     var filterType: FilterType = .box  // 像素重建滤波器，默认 box（均匀平均）
+    var useBlueNoise: Bool = false  // 是否使用蓝噪声采样（R2 序列），默认 false（伪随机）
 
     // 获取实际的 batchSize（根据模式提供默认值）
     func getEffectiveBatchSize() -> Int {
@@ -123,6 +124,10 @@ struct CommandLineArgs {
                                   mitchell - Mitchell-Netravali (平衡)
                                   lanczos  - Lanczos (最高质量)
                                   系统默认: box
+          --blue-noise            启用蓝噪声采样 (R2 低差异序列)
+                                  优点: 低 spp 下视觉质量更好，噪点分布均匀
+                                  推荐: 实时模式 (1-8 spp/frame) 或快速预览 (spp < 16)
+                                  系统默认: 关闭（伪随机采样）
 
         ┌──────────────────────────────────────────────────────────────────┐
         │ 输出选项 (仅限 image 模式)                                      │
@@ -379,6 +384,10 @@ struct CommandLineArgs {
                 args.filterType = filter
                 i += 2
 
+            case "--blue-noise":
+                args.useBlueNoise = true
+                i += 1
+
             default:
                 print("错误: 未知参数 '\(arg)'")
                 print("使用 --help 查看帮助信息")
@@ -403,5 +412,78 @@ struct CommandLineArgs {
     /// 获取可用场景列表
     static func getAvailableScenes() -> [String] {
         return SceneRegistry.availableScenes()
+    }
+
+    /// 生成默认输出文件名（基于渲染参数）
+    /// 格式: <scene>_<width>x<height>_<spp>s_d<depth>[_<optional_params>].ppm
+    func generateDefaultOutputFilename(scene: Scene) -> String {
+        var parts: [String] = []
+
+        // 1. 场景名（必选）
+        parts.append(sceneName)
+
+        // 2. 分辨率（必选）
+        let width = self.width ?? scene.camera.imageWidth
+        let height = Int(Float(width) / scene.camera.aspectRatio)
+        parts.append("\(width)x\(height)")
+
+        // 3. 采样数（必选）
+        let spp = self.spp ?? Int(scene.camera.samplesPerPixel)
+        parts.append("\(spp)s")
+
+        // 4. 最大深度（必选）
+        let depth = self.maxDepth ?? Int(scene.camera.maxDepth)
+        parts.append("d\(depth)")
+
+        // 5. 可选参数（按重要性排序）
+
+        // vfov（视野角度）- 仅当用户明确指定时才显示
+        if let vfov = self.vfov {
+            parts.append("fov\(Int(vfov))")
+        }
+
+        // defocusAngle（景深）
+        if let defocusAngle = self.defocusAngle, defocusAngle > 0 {
+            parts.append(String(format: "dof%.1f", defocusAngle))
+        }
+
+        // focusDist（焦平面距离）- 仅当用户明确指定时才显示
+        if let focusDist = self.focusDist {
+            parts.append(String(format: "fd%.1f", focusDist))
+        }
+
+        // filterType（滤波器）- 非 box 时显示
+        if filterType != .box {
+            parts.append(filterType.rawValue)
+        }
+
+        // useBlueNoise（蓝噪声）
+        if useBlueNoise {
+            parts.append("bn")
+        }
+
+        // tonemapMode（Tone Mapping）
+        if tonemapMode == .aces {
+            parts.append("aces")
+        }
+
+        // bloomStrength（Bloom）
+        if bloomStrength > 0 {
+            parts.append(String(format: "bloom%.1f", bloomStrength))
+        }
+
+        // bloomThreshold（Bloom 阈值）- 仅当非默认值 1.0 且 bloom 启用时
+        if bloomStrength > 0 && bloomThreshold != 1.0 {
+            parts.append(String(format: "bt%.1f", bloomThreshold))
+        }
+
+        // useBackground（背景）- true 时显示 bg
+        if let useBackground = self.useBackground, useBackground == true {
+            parts.append("bg")
+        }
+
+        // 组合所有部分
+        let filename = parts.joined(separator: "_") + ".ppm"
+        return filename
     }
 }

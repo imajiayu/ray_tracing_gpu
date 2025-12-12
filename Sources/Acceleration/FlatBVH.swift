@@ -58,9 +58,22 @@ class FlatBVH {
     var sphereCount: Int = 0
     var quadCount: Int = 0
 
-    private let maxLeafSize = 2  // 叶节点最大几何体数量（与 CPU 版本一致）
-    private let useSAH = true  // 启用 SAH 优化（Phase 5）
-    private let numBins = 16   // SAH 分箱数量
+    // MARK: - BVH 构建参数
+
+    /// 叶节点最大几何体数量
+    /// 增大此值可以减少BVH节点数，降低树深度
+    private let maxLeafSize = 4  // 从2增加到4
+
+    /// BVH树最大深度限制
+    /// 防止病态场景（如所有物体在同一直线）导致过深的树
+    /// 深度24对应最多 2^24 ≈ 1600万个几何体（远超实际需求）
+    private let maxBVHDepth = 24
+
+    /// 启用 SAH (Surface Area Heuristic) 优化
+    private let useSAH = true
+
+    /// SAH 分箱数量（用于加速最佳分割位置查找）
+    private let numBins = 16
 
     /// 从场景构建 FlatBVH
     func build(spheres: [Sphere], quads: [Quad], transforms: [Transform], debug: Bool = false) {
@@ -105,9 +118,45 @@ class FlatBVH {
 
         let _ = flattenRecursive(node: root)
 
+        // 输出BVH统计信息
+        printBVHStats()
+
         if debug {
             debugPrintTree()
         }
+    }
+
+    // MARK: - BVH 统计信息
+
+    /// 输出BVH统计信息
+    private func printBVHStats() {
+        guard !nodes.isEmpty else { return }
+
+        var maxDepth = 0
+        var leafCount = 0
+        var maxLeafGeometries = 0
+        var totalLeafGeometries = 0
+
+        func traverseStats(nodeIdx: Int, depth: Int) {
+            maxDepth = max(maxDepth, depth)
+            let node = nodes[nodeIdx]
+
+            if node.geometryCount > 0 {
+                leafCount += 1
+                maxLeafGeometries = max(maxLeafGeometries, Int(node.geometryCount))
+                totalLeafGeometries += Int(node.geometryCount)
+            } else {
+                traverseStats(nodeIdx: Int(node.leftChildOrFirst), depth: depth + 1)
+                traverseStats(nodeIdx: Int(node.rightChild), depth: depth + 1)
+            }
+        }
+
+        traverseStats(nodeIdx: 0, depth: 1)
+
+        let avgLeafGeometries = leafCount > 0 ? Float(totalLeafGeometries) / Float(leafCount) : 0
+
+        print("BVH Stats:     nodes=\(nodes.count), depth=\(maxDepth), leafs=\(leafCount)")
+        print("               max_leaf_size=\(maxLeafGeometries), avg_leaf_size=\(String(format: "%.1f", avgLeafGeometries))")
     }
 
     // MARK: - SAH 最佳分割
@@ -205,7 +254,20 @@ class FlatBVH {
             nodeBBox.debugPrint(prefix: "\(indent)  ")
         }
 
-        // 叶节点条件：1 或 2 个几何体
+        // ⚠️ 深度限制：防止树过深导致GPU栈溢出
+        // 如果达到最大深度，强制创建叶节点（即使几何体数量 > maxLeafSize）
+        if depth >= maxBVHDepth {
+            let leafGeometries = Array(geometries[start..<end])
+
+            if debug || objectSpan > maxLeafSize {
+                let indent = String(repeating: "  ", count: depth)
+                print("\(indent)  ⚠️ Max depth \(maxBVHDepth) reached! Creating leaf with \(objectSpan) geometries")
+            }
+
+            return BVHNode(bbox: nodeBBox, geometries: leafGeometries)
+        }
+
+        // 叶节点条件：几何体数量 ≤ maxLeafSize
         if objectSpan <= maxLeafSize {
             let leafGeometries = Array(geometries[start..<end])
 

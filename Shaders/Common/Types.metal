@@ -136,8 +136,9 @@ struct RenderParams {
     uint use_mis;         // 0 = 禁用 MIS, 1 = 启用 MIS
     uint sqrt_spp;        // sqrt(samples_per_pixel) - 分层采样网格大小
     uint filter_type;     // 像素重建滤波器类型 (0=box, 1=tent, 2=gaussian, 3=mitchell, 4=lanczos)
+    uint use_blue_noise;  // 0 = 伪随机采样, 1 = 蓝噪声采样（R2 序列）
     float recip_sqrt_spp; // 1.0 / sqrt_spp - 避免 GPU 除法
-    float3 padding2;      // 对齐填充
+    float2 padding2;      // 对齐填充（16字节对齐）
 };
 
 // 滤波器类型枚举

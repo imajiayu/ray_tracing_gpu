@@ -225,10 +225,21 @@ kernel void raytrace(
             uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
             RandomState rng = random_init(seed);
 
-            // 分层采样：在子格子 (s_i, s_j) 内随机采样
+            // 分层采样：在子格子 (s_i, s_j) 内采样
+            // 根据配置选择蓝噪声（R2 序列）或伪随机采样
+            float2 jitter;
+            if (params.use_blue_noise != 0) {
+                // 蓝噪声采样：使用 R2 低差异序列
+                uint pixel_seed = gid.x * 1973u + gid.y * 9277u;
+                jitter = blue_noise_sample(global_sample_index, pixel_seed);
+            } else {
+                // 伪随机采样（默认）
+                jitter = float2(random_float(&rng), random_float(&rng));
+            }
+
             // 像素采样偏移范围 [0, 1]，用于像素位置计算
-            float px_offset = (float(s_i) + random_float(&rng)) * params.recip_sqrt_spp;
-            float py_offset = (float(s_j) + random_float(&rng)) * params.recip_sqrt_spp;
+            float px_offset = (float(s_i) + jitter.x) * params.recip_sqrt_spp;
+            float py_offset = (float(s_j) + jitter.y) * params.recip_sqrt_spp;
 
             // 滤波器权重参数范围 [-0.5, 0.5]，相对于像素中心的偏移
             float px_filter = px_offset - 0.5f;
@@ -335,10 +346,21 @@ kernel void raytrace_realtime(
             uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
             RandomState rng = random_init(seed);
 
-            // 分层采样：在子格子 (s_i, s_j) 内随机采样
+            // 分层采样：在子格子 (s_i, s_j) 内采样
+            // 根据配置选择蓝噪声（R2 序列）或伪随机采样
+            float2 jitter;
+            if (params.use_blue_noise != 0) {
+                // 蓝噪声采样：使用 R2 低差异序列
+                uint pixel_seed = gid.x * 1973u + gid.y * 9277u;
+                jitter = blue_noise_sample(global_sample_index, pixel_seed);
+            } else {
+                // 伪随机采样（默认）
+                jitter = float2(random_float(&rng), random_float(&rng));
+            }
+
             // 像素采样偏移范围 [0, 1]，用于像素位置计算
-            float px_offset = (float(s_i) + random_float(&rng)) * params.recip_sqrt_spp;
-            float py_offset = (float(s_j) + random_float(&rng)) * params.recip_sqrt_spp;
+            float px_offset = (float(s_i) + jitter.x) * params.recip_sqrt_spp;
+            float py_offset = (float(s_j) + jitter.y) * params.recip_sqrt_spp;
 
             // 滤波器权重参数范围 [-0.5, 0.5]，相对于像素中心的偏移
             float px_filter = px_offset - 0.5f;

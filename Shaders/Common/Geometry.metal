@@ -85,8 +85,8 @@ inline bool sphere_hit(
     }
 
     // 记录命中信息（在物体空间）
-    rec->t = root;
-    float3 local_p = ray_at(test_ray, rec->t);
+    float local_t = root;  // 物体空间的 t 值
+    float3 local_p = ray_at(test_ray, local_t);
     rec->material_index = sphere.material_index;
 
     // 计算法线（在物体空间，从球心指向交点）
@@ -101,8 +101,14 @@ inline bool sphere_hit(
         rec->p = transform_point_to_world_space(t, local_p);
         float3 world_normal = transform_normal_to_world_space(t, local_normal);
         set_face_normal(rec, r, normalize(world_normal));
+
+        // ⚠️ 关键修复：重新计算世界空间的 t 值
+        // 不能直接使用物体空间的 t，因为光线方向在变换后可能改变
+        float3 offset = rec->p - r.origin;
+        rec->t = dot(offset, r.direction) / dot(r.direction, r.direction);
     } else {
         rec->p = local_p;
+        rec->t = local_t;  // 没有变换时，物体空间 = 世界空间
         set_face_normal(rec, r, local_normal);
     }
 
@@ -253,7 +259,7 @@ inline bool quad_hit(
     }
 
     // 记录命中信息
-    rec->t = t;
+    float local_t = t;  // 物体空间的 t 值
     rec->material_index = quad.material_index;
 
     // 设置UV坐标（a, b就是归一化的平面坐标，对应UV）
@@ -262,12 +268,17 @@ inline bool quad_hit(
 
     // 如果有变换，将交点和法线变换回世界空间
     if (quad.transform_index >= 0) {
-        GPUTransform t = transforms[quad.transform_index];
-        rec->p = transform_point_to_world_space(t, local_intersection);
-        float3 world_normal = transform_normal_to_world_space(t, quad.normal);
+        GPUTransform transform = transforms[quad.transform_index];  // 避免变量名冲突
+        rec->p = transform_point_to_world_space(transform, local_intersection);
+        float3 world_normal = transform_normal_to_world_space(transform, quad.normal);
         set_face_normal(rec, r, normalize(world_normal));
+
+        // ⚠️ 关键修复：重新计算世界空间的 t 值
+        float3 offset = rec->p - r.origin;
+        rec->t = dot(offset, r.direction) / dot(r.direction, r.direction);
     } else {
         rec->p = local_intersection;
+        rec->t = local_t;  // 没有变换时，物体空间 = 世界空间
         set_face_normal(rec, r, quad.normal);
     }
 

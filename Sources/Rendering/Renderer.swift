@@ -36,7 +36,8 @@ class Renderer {
         quadCount: Int,
         batchSize: Int = 1,
         sampleOffset: UInt32 = 0,
-        filterType: FilterType = .box
+        filterType: FilterType = .box,
+        useBlueNoise: Bool = false
     ) -> MTLTexture? {
         // 创建输出纹理
         guard let outputTexture = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight) else {
@@ -68,8 +69,9 @@ class Renderer {
             useMIS: 1,
             sqrtSpp: sqrtSpp,
             filterType: filterType.gpuValue,
+            useBlueNoise: useBlueNoise ? 1 : 0,
             recipSqrtSpp: recipSqrtSpp,
-            padding2: SIMD3<Float>(0, 0, 0)
+            padding2: SIMD2<Float>(0, 0)
         )
 
         var cameraParams = camera.gpuParams
@@ -130,6 +132,7 @@ class Renderer {
         bvh: FlatBVH,
         batchSize: Int,
         filterType: FilterType = .box,
+        useBlueNoise: Bool = false,
         progressCallback: ((Int) -> Void)? = nil
     ) -> (pixels: [Float], renderTime: TimeInterval) {
         // 转换为 GPU 数据
@@ -178,8 +181,9 @@ class Renderer {
             useMIS: 1,  // Always enabled
             sqrtSpp: sqrtSppTotal,
             filterType: filterType.gpuValue,
+            useBlueNoise: useBlueNoise ? 1 : 0,
             recipSqrtSpp: recipSqrtSppTotal,
-            padding2: SIMD3<Float>(0, 0, 0)
+            padding2: SIMD2<Float>(0, 0)
         )
 
         // 执行渐进式渲染（移除所有 debug 打印）

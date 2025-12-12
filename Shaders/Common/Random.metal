@@ -113,4 +113,49 @@ inline float pcg_hash_float(uint input) {
     return float(pcg_hash(input)) / 4294967296.0f;
 }
 
+// ========== 蓝噪声采样（R2 低差异序列）==========
+
+/// R2 低差异序列（基于黄金比例）
+/// 参考：http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
+///
+/// 特点：
+/// - 点分布极其均匀，避免聚集
+/// - 无需预生成纹理或查找表
+/// - 计算开销极低（2 个乘法 + 1 个 fract）
+/// - 质量优于伪随机，接近 Sobol 序列
+///
+/// @param n 序列索引（0, 1, 2, ...）
+/// @return 2D 点 [0, 1) × [0, 1)，均匀分布
+inline float2 r2_sequence(uint n) {
+    // 黄金比例 φ = 1.618033988749895
+    // α₁ = 1/φ ≈ 0.618033988749895
+    // α₂ = 1/φ² ≈ 0.381966011250105
+    const float g = 1.6180339887498948482;  // Golden ratio
+    const float a1 = 1.0 / g;
+    const float a2 = 1.0 / (g * g);
+
+    // R2 序列公式：(n·α₁ mod 1, n·α₂ mod 1)
+    return fract(float2(float(n) * a1, float(n) * a2));
+}
+
+/// 蓝噪声采样（带抖动的 R2 序列）
+///
+/// 在 R2 序列基础上添加少量抖动，避免固定模式
+/// 抖动使用 PCG 哈希保证每个像素不同
+///
+/// @param n 序列索引
+/// @param pixel_seed 像素种子（确保不同像素有不同抖动）
+/// @return 2D 点 [0, 1) × [0, 1)
+inline float2 blue_noise_sample(uint n, uint pixel_seed) {
+    float2 base = r2_sequence(n);
+
+    // 使用 PCG 哈希生成小抖动（± 0.01）
+    // 这样既保留 R2 的均匀性，又避免固定模式的artifacts
+    uint hash = pcg_hash(pixel_seed + n);
+    float jitter_x = (float(hash & 0xFFFFu) / 65535.0f - 0.5f) * 0.02f;
+    float jitter_y = (float((hash >> 16u) & 0xFFFFu) / 65535.0f - 0.5f) * 0.02f;
+
+    return fract(base + float2(jitter_x, jitter_y));
+}
+
 #endif // RANDOM_METAL

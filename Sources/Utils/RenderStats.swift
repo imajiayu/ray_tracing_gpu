@@ -69,11 +69,16 @@ class ImageRenderStats {
     private let maxDepth: Int
     private let totalBatches: Int
     private let cameraConfig: CameraConfig
+    private let filterType: FilterType
+    private let useBlueNoise: Bool
+    private let tonemapMode: TonemapMode
+    private let bloomStrength: Float
+    private let bloomThreshold: Float
 
     private let startTime: Date
     private let logger = ThreadSafeLogger.shared
 
-    init(sceneName: String, width: Int, height: Int, spp: Int, maxDepth: Int, totalBatches: Int, cameraConfig: CameraConfig) {
+    init(sceneName: String, width: Int, height: Int, spp: Int, maxDepth: Int, totalBatches: Int, cameraConfig: CameraConfig, filterType: FilterType = .box, useBlueNoise: Bool = false, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0) {
         self.sceneName = sceneName
         self.width = width
         self.height = height
@@ -81,6 +86,11 @@ class ImageRenderStats {
         self.maxDepth = maxDepth
         self.totalBatches = totalBatches
         self.cameraConfig = cameraConfig
+        self.filterType = filterType
+        self.useBlueNoise = useBlueNoise
+        self.tonemapMode = tonemapMode
+        self.bloomStrength = bloomStrength
+        self.bloomThreshold = bloomThreshold
         self.startTime = Date()
     }
 
@@ -110,6 +120,19 @@ class ImageRenderStats {
         logger.logln("  VFov:        \(String(format: "%.1f", cam.vfov))°")
         logger.logln("  Focus Dist:  \(String(format: "%.2f", cam.focusDist))")
         logger.logln("  Defocus:     \(String(format: "%.2f", cam.defocusAngle))° \(cam.defocusAngle > 0 ? "(DoF enabled)" : "(DoF disabled)")")
+        logger.logln("  Background:  \(cam.useBackground ? "enabled" : "disabled")")
+        logger.logln("──────────────────────────────────────────────────────────")
+
+        // 打印渲染选项
+        logger.logln("Render Options:")
+        logger.logln("  Filter:      \(filterType.rawValue) (\(filterType.description))")
+        logger.logln("  Sampling:    \(useBlueNoise ? "Blue Noise (R2 sequence)" : "Pseudo-random")")
+        logger.logln("  Tonemap:     \(tonemapMode.rawValue == "aces" ? "ACES Filmic" : "None (Hard clamp)")")
+        if bloomStrength > 0 {
+            logger.logln("  Bloom:       \(String(format: "%.2f", bloomStrength)) (threshold: \(String(format: "%.2f", bloomThreshold)))")
+        } else {
+            logger.logln("  Bloom:       disabled")
+        }
         logger.logln("──────────────────────────────────────────────────────────")
         logger.logln("")
     }
@@ -204,6 +227,11 @@ class WindowRenderStats {
     private let height: Int
     private let batchSize: Int
     private var cameraConfig: CameraConfig
+    private let filterType: FilterType
+    private let useBlueNoise: Bool
+    private let tonemapMode: TonemapMode
+    private let bloomStrength: Float
+    private let bloomThreshold: Float
 
     private let startTime: Date
     private let logger = ThreadSafeLogger.shared
@@ -213,12 +241,17 @@ class WindowRenderStats {
     private var frameCount: Int = 0
     private var lastStatsTime: Date = Date()
 
-    init(sceneName: String, width: Int, height: Int, batchSize: Int, cameraConfig: CameraConfig) {
+    init(sceneName: String, width: Int, height: Int, batchSize: Int, cameraConfig: CameraConfig, filterType: FilterType = .box, useBlueNoise: Bool = false, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0) {
         self.sceneName = sceneName
         self.width = width
         self.height = height
         self.batchSize = batchSize
         self.cameraConfig = cameraConfig
+        self.filterType = filterType
+        self.useBlueNoise = useBlueNoise
+        self.tonemapMode = tonemapMode
+        self.bloomStrength = bloomStrength
+        self.bloomThreshold = bloomThreshold
         self.startTime = Date()
         self.lastFrameTime = Date()
         self.lastStatsTime = Date()
@@ -249,6 +282,19 @@ class WindowRenderStats {
         logger.logln("  VFov:        \(String(format: "%.1f", cam.vfov))°")
         logger.logln("  Focus Dist:  \(String(format: "%.2f", cam.focusDist))")
         logger.logln("  Defocus:     \(String(format: "%.2f", cam.defocusAngle))° \(cam.defocusAngle > 0 ? "(DoF enabled)" : "(DoF disabled)")")
+        logger.logln("  Background:  \(cam.useBackground ? "enabled" : "disabled")")
+        logger.logln("──────────────────────────────────────────────────────────")
+
+        // 打印渲染选项
+        logger.logln("Render Options:")
+        logger.logln("  Filter:      \(filterType.rawValue) (\(filterType.description))")
+        logger.logln("  Sampling:    \(useBlueNoise ? "Blue Noise (R2 sequence)" : "Pseudo-random")")
+        logger.logln("  Tonemap:     \(tonemapMode.rawValue == "aces" ? "ACES Filmic" : "None (Hard clamp)")")
+        if bloomStrength > 0 {
+            logger.logln("  Bloom:       \(String(format: "%.2f", bloomStrength)) (threshold: \(String(format: "%.2f", bloomThreshold)))")
+        } else {
+            logger.logln("  Bloom:       disabled")
+        }
         logger.logln("──────────────────────────────────────────────────────────")
         logger.logln("")
         logger.logln("Controls:")
@@ -261,7 +307,8 @@ class WindowRenderStats {
         logger.logln("  Q/E        - Camera roll")
         logger.logln("  Wheel      - Adjust focus distance")
         logger.logln("  +/-        - Adjust aperture")
-        logger.logln("  1/2/3/4    - Quality presets")
+        logger.logln("  1/2/3/4    - Quality presets (1/2/4/8 spp/frame)")
+        logger.logln("  Tab        - Toggle HUD display")
         logger.logln("══════════════════════════════════════════════════════════")
         logger.logln("")
     }

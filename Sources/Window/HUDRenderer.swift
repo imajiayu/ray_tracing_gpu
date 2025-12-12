@@ -15,8 +15,8 @@ class HUDRenderer {
     var hudTexture: MTLTexture?
     var hudPipeline: MTLRenderPipelineState!
 
-    let hudWidth: Int = 210    // HUD 背景宽度（竖版，刚好容纳 Pos 行）
-    let hudHeight: Int = 200   // HUD 背景高度（紧凑竖版布局，9行内容）
+    let hudWidth: Int = 240    // HUD 背景宽度（稍微加宽以容纳更多信息）
+    let hudHeight: Int = 260   // HUD 背景高度（增加以容纳新参数）
 
     init(device: MTLDevice, library: MTLLibrary) throws {
         self.device = device
@@ -69,7 +69,11 @@ class HUDRenderer {
     ///   - sampleCount: 累积采样数
     ///   - cameraConfig: 当前相机配置
     ///   - rollDegrees: 相机滚转角（暂未实现，传 0.0）
-    func updateHUD(frameCount: Int, fps: Double, frameTimeMs: Double, sampleCount: Int, cameraConfig: CameraConfig, rollDegrees: Double = 0.0) {
+    ///   - filterType: 像素重建滤波器
+    ///   - useBlueNoise: 是否使用蓝噪声采样
+    ///   - tonemapMode: Tone Mapping 模式
+    ///   - bloomStrength: Bloom 强度
+    func updateHUD(frameCount: Int, fps: Double, frameTimeMs: Double, sampleCount: Int, cameraConfig: CameraConfig, rollDegrees: Double = 0.0, filterType: FilterType = .box, useBlueNoise: Bool = false, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0) {
         guard let texture = hudTexture else { return }
 
         // 创建位图上下文（BGRA8）
@@ -158,6 +162,24 @@ class HUDRenderer {
         yOffset -= lineHeight
 
         drawText(context: context, text: String(format: "Roll: %.1f°", rollDegrees), x: 15, y: yOffset, font: font, color: cyanColor)
+        yOffset -= lineHeight + 3  // 空行（分隔相机参数和渲染选项）
+
+        // 渲染选项（黄色显示）
+        let yellowColor = CGColor(red: 1, green: 1, blue: 0, alpha: 1)
+        drawText(context: context, text: "Filter: \(filterType.rawValue)", x: 15, y: yOffset, font: font, color: yellowColor)
+        yOffset -= lineHeight
+
+        drawText(context: context, text: "Sampling: \(useBlueNoise ? "Blue Noise" : "Random")", x: 15, y: yOffset, font: font, color: yellowColor)
+        yOffset -= lineHeight
+
+        drawText(context: context, text: "Tonemap: \(tonemapMode.rawValue)", x: 15, y: yOffset, font: font, color: yellowColor)
+        yOffset -= lineHeight
+
+        if bloomStrength > 0 {
+            drawText(context: context, text: String(format: "Bloom: %.2f", bloomStrength), x: 15, y: yOffset, font: font, color: yellowColor)
+        } else {
+            drawText(context: context, text: "Bloom: off", x: 15, y: yOffset, font: font, color: CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+        }
 
         // 上传到 Metal 纹理
         guard let data = context.data else { return }

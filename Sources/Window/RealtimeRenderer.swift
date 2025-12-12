@@ -71,11 +71,14 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
     // MARK: - Filter
     let filterType: FilterType
 
+    // MARK: - Blue Noise
+    let useBlueNoise: Bool
+
     // MARK: - 公开接口
     var currentSampleCount: Int { return sampleCount }
     var currentFPS: Double { return fpsSmooth }
 
-    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneName: String, batchSize: Int = 1, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0, filterType: FilterType = .box) throws {
+    init(scene: Scene, mtkView: MTKView, device: MTLDevice, sceneName: String, batchSize: Int = 1, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0, filterType: FilterType = .box, useBlueNoise: Bool = false) throws {
         self.device = device
         self.scene = scene
         self.sceneName = sceneName
@@ -83,6 +86,7 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
         self.initialBatchSize = batchSize
         self.tonemapMode = tonemapMode
         self.filterType = filterType
+        self.useBlueNoise = useBlueNoise
 
         // 初始化 Metal 上下文
         guard let ctx = MetalContext() else {
@@ -254,7 +258,8 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
             quadCount: quadCount,
             batchSize: batchSize,
             sampleOffset: UInt32(sampleCount),
-            filterType: filterType
+            filterType: filterType,
+            useBlueNoise: useBlueNoise
         ) else {
             return
         }
@@ -314,7 +319,11 @@ class RealtimeRenderer: NSObject, MTKViewDelegate {
                 frameTimeMs: frameTimeMs,
                 sampleCount: sampleCount,
                 cameraConfig: scene.camera,
-                rollDegrees: Double(inputController.getRollDegrees())
+                rollDegrees: Double(inputController.getRollDegrees()),
+                filterType: filterType,
+                useBlueNoise: useBlueNoise,
+                tonemapMode: tonemapMode,
+                bloomStrength: bloomRenderer?.bloomStrength ?? 0.0
             )
         }
 
