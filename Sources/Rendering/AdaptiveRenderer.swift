@@ -133,6 +133,11 @@ class AdaptiveRenderer {
     var resetPixelMaskPipeline: MTLComputePipelineState
     var initializeBuffersPipeline: MTLComputePipelineState
 
+    // AOV 多通道自适应采样管线
+    var raytraceAOVPipeline: MTLComputePipelineState
+    var accumulateSamplesAOVPipeline: MTLComputePipelineState
+    var computeVarianceAOVPipeline: MTLComputePipelineState
+
     init(context: MetalContext, baseRenderer: Renderer, library: MTLLibrary) {
         self.context = context
         self.baseRenderer = baseRenderer
@@ -145,7 +150,10 @@ class AdaptiveRenderer {
               let readFunc = library.makeFunction(name: "read_final_pixels"),
               let maskFunc = library.makeFunction(name: "create_pixel_mask"),
               let resetMaskFunc = library.makeFunction(name: "reset_pixel_mask"),
-              let initBuffersFunc = library.makeFunction(name: "initialize_buffers") else {
+              let initBuffersFunc = library.makeFunction(name: "initialize_buffers"),
+              let raytraceAOVFunc = library.makeFunction(name: "raytrace_aov"),
+              let accumulateAOVFunc = library.makeFunction(name: "accumulate_samples_aov"),
+              let varianceAOVFunc = library.makeFunction(name: "compute_variance_aov") else {
             fatalError("Failed to find adaptive sampling functions in library")
         }
 
@@ -157,6 +165,9 @@ class AdaptiveRenderer {
         self.createPixelMaskPipeline = try! context.device.makeComputePipelineState(function: maskFunc)
         self.resetPixelMaskPipeline = try! context.device.makeComputePipelineState(function: resetMaskFunc)
         self.initializeBuffersPipeline = try! context.device.makeComputePipelineState(function: initBuffersFunc)
+        self.raytraceAOVPipeline = try! context.device.makeComputePipelineState(function: raytraceAOVFunc)
+        self.accumulateSamplesAOVPipeline = try! context.device.makeComputePipelineState(function: accumulateAOVFunc)
+        self.computeVarianceAOVPipeline = try! context.device.makeComputePipelineState(function: varianceAOVFunc)
     }
 
     /// 自适应渲染主函数
@@ -578,6 +589,323 @@ class AdaptiveRenderer {
         )
 
         return (pixels, renderTime, stats)
+    }
+
+    /// AOV 多通道自适应渲染：按材质通道（diffuse/specular/transmission）分别判断方差收敛
+    /// 编排与 renderAdaptive 完全一致，仅渲染/累积/方差/读取改为 AOV 版本
+    func renderAdaptiveAOV(
+        scene: Scene,
+        camera: Camera,
+        bvh: FlatBVH,
+        sceneName: String,
+        minSamples: Int = 16,
+        targetSpp: Int,
+        varianceThreshold: Float = 0.0001,
+        relativeThreshold: Float = 0.01,
+        batchSize: Int = 8,
+        filterType: FilterType = .box,
+        useBlueNoise: Bool = false,
+        progressCallback: ((AdaptiveProgress) -> Void)? = nil
+    ) -> (pixels: [Float], renderTime: TimeInterval, stats: AdaptiveStats) {
+
+        let startTime = Date()
+        let width = camera.imageWidth
+        let height = camera.imageHeight
+        let totalPixels = width * height
+        let totalBudget = UInt64(width) * UInt64(height) * UInt64(targetSpp)
+        var usedBudget: UInt64 = 0
+
+        let (gpuSpheres, gpuQuads, gpuMaterials, gpuTextures, gpuTransforms) = scene.toGPU()
+
+        guard let gpuBuffers = baseRenderer.createBuffers(
+            spheres: gpuSpheres, quads: gpuQuads, materials: gpuMaterials,
+            textures: gpuTextures, transforms: gpuTransforms, bvh: bvh, lights: scene.lights
+        ) else {
+            fatalError("Failed to create GPU buffers")
+        }
+
+        // AOV 累积缓冲区（10 个 float4，GPU-only Private 模式）
+        let float4Len = totalPixels * MemoryLayout<SIMD4<Float>>.stride
+        func makePrivateBuffer(_ len: Int) -> MTLBuffer {
+            guard let b = context.device.makeBuffer(length: len, options: .storageModePrivate) else {
+                fatalError("Failed to allocate AOV buffer")
+            }
+            return b
+        }
+        let beautySum = makePrivateBuffer(float4Len)
+        let beautySumSq = makePrivateBuffer(float4Len)
+        let diffuseSum = makePrivateBuffer(float4Len)
+        let diffuseSumSq = makePrivateBuffer(float4Len)
+        let specularSum = makePrivateBuffer(float4Len)
+        let specularSumSq = makePrivateBuffer(float4Len)
+        let transmissionSum = makePrivateBuffer(float4Len)
+        let transmissionSumSq = makePrivateBuffer(float4Len)
+        let emissionSum = makePrivateBuffer(float4Len)
+        let emissionSumSq = makePrivateBuffer(float4Len)
+
+        guard let pixelMaskBuffer = context.device.makeBuffer(
+            length: totalPixels * MemoryLayout<UInt32>.stride, options: .storageModePrivate
+        ) else {
+            fatalError("Failed to allocate pixel mask buffer")
+        }
+
+        guard let sampleCountBuffer = context.device.makeBuffer(length: totalPixels * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let varianceBuffer = context.device.makeBuffer(length: totalPixels * MemoryLayout<Float>.stride, options: .storageModeShared),
+              let convergedFlagBuffer = context.device.makeBuffer(length: totalPixels * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let unconvergedListBuffer = context.device.makeBuffer(length: totalPixels * MemoryLayout<UInt32>.stride, options: .storageModeShared) else {
+            fatalError("Failed to allocate CPU-accessible buffers")
+        }
+
+        memset(sampleCountBuffer.contents(), 0, sampleCountBuffer.length)
+        memset(varianceBuffer.contents(), 0, varianceBuffer.length)
+        memset(convergedFlagBuffer.contents(), 0, convergedFlagBuffer.length)
+
+        // 初始化 AOV GPU buffer（逐对清零，sampleCount 末次清零生效）
+        initializeGPUBuffers(colorSumBuffer: beautySum, colorSumSquaredBuffer: beautySumSq, sampleCountBuffer: sampleCountBuffer, totalPixels: totalPixels)
+        initializeGPUBuffers(colorSumBuffer: diffuseSum, colorSumSquaredBuffer: diffuseSumSq, sampleCountBuffer: sampleCountBuffer, totalPixels: totalPixels)
+        initializeGPUBuffers(colorSumBuffer: specularSum, colorSumSquaredBuffer: specularSumSq, sampleCountBuffer: sampleCountBuffer, totalPixels: totalPixels)
+        initializeGPUBuffers(colorSumBuffer: transmissionSum, colorSumSquaredBuffer: transmissionSumSq, sampleCountBuffer: sampleCountBuffer, totalPixels: totalPixels)
+        initializeGPUBuffers(colorSumBuffer: emissionSum, colorSumSquaredBuffer: emissionSumSq, sampleCountBuffer: sampleCountBuffer, totalPixels: totalPixels)
+
+        let config = AdaptiveConfig(minSpp: minSamples, targetSpp: targetSpp, varianceThreshold: varianceThreshold, relativeThreshold: relativeThreshold, batchSize: batchSize)
+
+        var adaptiveParams = AdaptiveSamplingParams(
+            minSamples: UInt32(config.warmupSpp),
+            targetSpp: UInt32(targetSpp),
+            varianceThreshold: varianceThreshold,
+            adaptiveBatchSize: UInt32(batchSize),
+            width: UInt32(width),
+            height: UInt32(height),
+            currentPass: 0,
+            adaptiveRelativeThreshold: relativeThreshold,
+            totalBudget: totalBudget,
+            usedBudget: usedBudget
+        )
+
+        ThreadSafeLogger.shared.logln("")
+        ThreadSafeLogger.shared.logln("╔══════════════════════════════════════════════════════════╗")
+        ThreadSafeLogger.shared.logln("║      AOV Multi-Channel Adaptive Sampling Strategy        ║")
+        ThreadSafeLogger.shared.logln("╚══════════════════════════════════════════════════════════╝")
+        ThreadSafeLogger.shared.logln("  Channels: diffuse / specular / transmission (max-variance)")
+        ThreadSafeLogger.shared.logln("  Stage 0 (Warmup)          : 0 → \(config.warmupSpp) spp")
+        ThreadSafeLogger.shared.logln("  Stage 1 (Early Rejection) : \(config.warmupSpp) → \(config.stage1End) spp")
+        ThreadSafeLogger.shared.logln("  Stage 2 (Adaptive)        : \(config.stage1End) → \(config.stage2End) spp")
+        ThreadSafeLogger.shared.logln("  Stage 3 (Final Refinement): \(config.stage2End) → \(targetSpp) spp")
+        ThreadSafeLogger.shared.logln("")
+
+        var currentSpp = 0
+        var currentSampleOffset = 0
+        var checkpointCount = 0
+
+        // 闭包：渲染一个 AOV 批次并累积到各通道缓冲区
+        func renderAndAccumulateAOV(samples: Int, mask: MTLBuffer?) {
+            guard let aov = baseRenderer.renderToTexturesAOV(
+                scene: scene, camera: camera, bvh: bvh, buffers: gpuBuffers,
+                sphereCount: gpuSpheres.count, quadCount: gpuQuads.count,
+                aovPipeline: raytraceAOVPipeline,
+                batchSize: samples, sampleOffset: UInt32(currentSampleOffset),
+                filterType: filterType, useBlueNoise: useBlueNoise, pixelMask: mask
+            ) else {
+                fatalError("Failed to render AOV batch")
+            }
+            accumulateToAdaptiveBuffersAOV(
+                textures: aov,
+                beautySum: beautySum, beautySumSq: beautySumSq,
+                diffuseSum: diffuseSum, diffuseSumSq: diffuseSumSq,
+                specularSum: specularSum, specularSumSq: specularSumSq,
+                transmissionSum: transmissionSum, transmissionSumSq: transmissionSumSq,
+                emissionSum: emissionSum, emissionSumSq: emissionSumSq,
+                sampleCountBuffer: sampleCountBuffer, pixelMaskBuffer: mask,
+                spp: UInt32(samples), width: width, height: height
+            )
+        }
+
+        // ===== Stage 0: Warmup =====
+        ThreadSafeLogger.shared.logln("→ Stage 0: Warmup (\(config.warmupSpp) spp)")
+        while currentSpp < config.warmupSpp {
+            let samplesThisBatch = min(batchSize, config.warmupSpp - currentSpp)
+            renderAndAccumulateAOV(samples: samplesThisBatch, mask: nil)
+            currentSpp += samplesThisBatch
+            currentSampleOffset += samplesThisBatch
+            usedBudget += UInt64(totalPixels) * UInt64(samplesThisBatch)
+        }
+        ThreadSafeLogger.shared.logln("  ✓ Warmup complete: \(currentSpp) spp")
+
+        // ===== Stage 1-3 =====
+        for stage in 1...3 {
+            let stageEnd: Int
+            switch stage {
+            case 1: stageEnd = config.stage1End
+            case 2: stageEnd = config.stage2End
+            case 3: stageEnd = targetSpp
+            default: continue
+            }
+            if currentSpp >= stageEnd { continue }
+
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("→ Stage \(stage): \(config.getStageName(stage)) (\(currentSpp) → \(stageEnd) spp)")
+
+            let checkpoints = config.getCheckpoints(stage: stage, currentSpp: currentSpp)
+
+            if checkpoints.isEmpty {
+                while currentSpp < stageEnd && usedBudget < totalBudget {
+                    let samplesThisBatch = min(batchSize, stageEnd - currentSpp)
+                    if Int64(totalBudget) - Int64(usedBudget) <= 0 {
+                        ThreadSafeLogger.shared.logln("  Budget exhausted at \(currentSpp) spp"); break
+                    }
+                    let pixelMask = (stage == 1) ? nil : pixelMaskBuffer
+                    renderAndAccumulateAOV(samples: samplesThisBatch, mask: pixelMask)
+                    currentSpp += samplesThisBatch
+                    currentSampleOffset += samplesThisBatch
+                    let activeCount = (pixelMask == nil) ? totalPixels :
+                        getUnconvergedPixels(convergedFlagBuffer: convergedFlagBuffer, unconvergedListBuffer: unconvergedListBuffer, totalPixels: totalPixels).count
+                    usedBudget += UInt64(activeCount) * UInt64(samplesThisBatch)
+                }
+                continue
+            }
+
+            for checkpoint in checkpoints {
+                if usedBudget >= totalBudget { ThreadSafeLogger.shared.logln("  Budget exhausted"); break }
+
+                while currentSpp < checkpoint && usedBudget < totalBudget {
+                    let unconvergedPixels = (stage >= 1 && checkpointCount > 0) ?
+                        getUnconvergedPixels(convergedFlagBuffer: convergedFlagBuffer, unconvergedListBuffer: unconvergedListBuffer, totalPixels: totalPixels) : []
+                    let usePixelMask = !unconvergedPixels.isEmpty
+                    let activePixelCount = usePixelMask ? unconvergedPixels.count : totalPixels
+
+                    if usePixelMask && unconvergedPixels.isEmpty {
+                        ThreadSafeLogger.shared.logln("  All pixels converged!"); break
+                    }
+                    if usePixelMask {
+                        resetPixelMask(buffer: pixelMaskBuffer, totalPixels: totalPixels)
+                        createPixelMaskGPU(unconvergedList: unconvergedPixels, pixelMaskBuffer: pixelMaskBuffer, unconvergedCount: unconvergedPixels.count)
+                    }
+
+                    let samplesThisBatch = min(batchSize, checkpoint - currentSpp)
+                    let remainingBudget = Int64(totalBudget) - Int64(usedBudget)
+                    let maxAffordable = Int(remainingBudget) / max(activePixelCount, 1)
+                    if maxAffordable <= 0 { ThreadSafeLogger.shared.logln("  Budget exhausted"); break }
+                    let actualSamples = min(samplesThisBatch, maxAffordable, 32)
+
+                    renderAndAccumulateAOV(samples: actualSamples, mask: usePixelMask ? pixelMaskBuffer : nil)
+                    currentSpp += actualSamples
+                    currentSampleOffset += actualSamples
+                    usedBudget += UInt64(activePixelCount) * UInt64(actualSamples)
+                }
+
+                checkpointCount += 1
+                let base = (stage == 1 ? config.warmupSpp : (stage == 2 ? config.stage1End : config.stage2End))
+                let stageProgress = Float(currentSpp - base) / Float(stageEnd - base)
+                let thresholdMultiplier = config.getThresholdMultiplier(stage: stage, progress: stageProgress)
+                adaptiveParams.varianceThreshold = varianceThreshold * thresholdMultiplier
+                adaptiveParams.currentPass = UInt32(checkpointCount)
+                adaptiveParams.usedBudget = usedBudget
+
+                computeVarianceAOV(
+                    diffuseSum: diffuseSum, diffuseSumSq: diffuseSumSq,
+                    specularSum: specularSum, specularSumSq: specularSumSq,
+                    transmissionSum: transmissionSum, transmissionSumSq: transmissionSumSq,
+                    sampleCountBuffer: sampleCountBuffer, varianceBuffer: varianceBuffer,
+                    convergedFlagBuffer: convergedFlagBuffer, params: &adaptiveParams,
+                    width: width, height: height
+                )
+
+                let convergedCount = readConvergedCount(buffer: convergedFlagBuffer, totalPixels: totalPixels)
+                let convergedPercent = Float(convergedCount) / Float(totalPixels) * 100
+                ThreadSafeLogger.shared.logln("  Checkpoint \(checkpoint) spp: \(convergedCount)/\(totalPixels) converged (\(String(format: "%.1f", convergedPercent))%), threshold=\(String(format: "%.2e", varianceThreshold * thresholdMultiplier))")
+
+                if convergedCount == totalPixels { ThreadSafeLogger.shared.logln("  All pixels converged!"); break }
+            }
+            ThreadSafeLogger.shared.logln("  ✓ Stage \(stage) complete: \(currentSpp) spp")
+        }
+
+        let renderTime = Date().timeIntervalSince(startTime)
+
+        // 从 beauty 通道读取最终像素（beauty = 各通道之和）
+        let pixels = readFinalPixels(colorSumBuffer: beautySum, sampleCountBuffer: sampleCountBuffer, width: width, height: height)
+
+        ThreadSafeLogger.shared.logln("")
+        ThreadSafeLogger.shared.logln("✓ AOV adaptive sampling complete!")
+
+        let sampleCounts = readSampleCounts(buffer: sampleCountBuffer, totalPixels: totalPixels)
+        let stats = generateStats(sampleCounts: sampleCounts, renderTime: renderTime, targetSpp: targetSpp, iterationCount: checkpointCount, totalPixels: totalPixels, totalBudget: totalBudget, usedBudget: usedBudget)
+
+        return (pixels, renderTime, stats)
+    }
+
+    /// AOV 累积：将 5 个通道纹理累加到 10 个累积缓冲区
+    private func accumulateToAdaptiveBuffersAOV(
+        textures: (beauty: MTLTexture, diffuse: MTLTexture, specular: MTLTexture, transmission: MTLTexture, emission: MTLTexture),
+        beautySum: MTLBuffer, beautySumSq: MTLBuffer,
+        diffuseSum: MTLBuffer, diffuseSumSq: MTLBuffer,
+        specularSum: MTLBuffer, specularSumSq: MTLBuffer,
+        transmissionSum: MTLBuffer, transmissionSumSq: MTLBuffer,
+        emissionSum: MTLBuffer, emissionSumSq: MTLBuffer,
+        sampleCountBuffer: MTLBuffer, pixelMaskBuffer: MTLBuffer?,
+        spp: UInt32, width: Int, height: Int
+    ) {
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(accumulateSamplesAOVPipeline)
+        encoder.setTexture(textures.beauty, index: 0)
+        encoder.setTexture(textures.diffuse, index: 1)
+        encoder.setTexture(textures.specular, index: 2)
+        encoder.setTexture(textures.transmission, index: 3)
+        encoder.setTexture(textures.emission, index: 4)
+        encoder.setBuffer(beautySum, offset: 0, index: 0)
+        encoder.setBuffer(beautySumSq, offset: 0, index: 1)
+        encoder.setBuffer(diffuseSum, offset: 0, index: 2)
+        encoder.setBuffer(diffuseSumSq, offset: 0, index: 3)
+        encoder.setBuffer(specularSum, offset: 0, index: 4)
+        encoder.setBuffer(specularSumSq, offset: 0, index: 5)
+        encoder.setBuffer(transmissionSum, offset: 0, index: 6)
+        encoder.setBuffer(transmissionSumSq, offset: 0, index: 7)
+        encoder.setBuffer(emissionSum, offset: 0, index: 8)
+        encoder.setBuffer(emissionSumSq, offset: 0, index: 9)
+        encoder.setBuffer(sampleCountBuffer, offset: 0, index: 10)
+        if let mask = pixelMaskBuffer {
+            encoder.setBuffer(mask, offset: 0, index: 11)
+        } else {
+            encoder.setBuffer(nil, offset: 0, index: 11)
+        }
+        var sppValue = spp
+        encoder.setBytes(&sppValue, length: MemoryLayout<UInt32>.stride, index: 12)
+        let threadsPerGrid = MTLSize(width: width, height: height, depth: 1)
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
+    /// AOV 方差：基于 diffuse/specular/transmission 三通道最大方差判断收敛
+    private func computeVarianceAOV(
+        diffuseSum: MTLBuffer, diffuseSumSq: MTLBuffer,
+        specularSum: MTLBuffer, specularSumSq: MTLBuffer,
+        transmissionSum: MTLBuffer, transmissionSumSq: MTLBuffer,
+        sampleCountBuffer: MTLBuffer, varianceBuffer: MTLBuffer,
+        convergedFlagBuffer: MTLBuffer, params: inout AdaptiveSamplingParams,
+        width: Int, height: Int
+    ) {
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(computeVarianceAOVPipeline)
+        encoder.setBuffer(diffuseSum, offset: 0, index: 0)
+        encoder.setBuffer(diffuseSumSq, offset: 0, index: 1)
+        encoder.setBuffer(specularSum, offset: 0, index: 2)
+        encoder.setBuffer(specularSumSq, offset: 0, index: 3)
+        encoder.setBuffer(transmissionSum, offset: 0, index: 4)
+        encoder.setBuffer(transmissionSumSq, offset: 0, index: 5)
+        encoder.setBuffer(sampleCountBuffer, offset: 0, index: 6)
+        encoder.setBuffer(varianceBuffer, offset: 0, index: 7)
+        encoder.setBuffer(convergedFlagBuffer, offset: 0, index: 8)
+        encoder.setBytes(&params, length: MemoryLayout<AdaptiveSamplingParams>.stride, index: 9)
+        let threadsPerGrid = MTLSize(width: width, height: height, depth: 1)
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
     }
 
     // MARK: - 辅助方法

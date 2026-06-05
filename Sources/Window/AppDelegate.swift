@@ -452,6 +452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ThreadSafeLogger.shared.logln("  Filter             : \(args.filterType.description)")
             ThreadSafeLogger.shared.logln("  Blue Noise         : \(args.useBlueNoise ? "Yes" : "No")")
             ThreadSafeLogger.shared.logln("  Weighted Variance  : \(args.useWeightedVariance ? "Yes (Material-aware)" : "No (Standard)")")
+            ThreadSafeLogger.shared.logln("  AOV Multi-Channel  : \(args.useAOVAdaptive ? "Yes (diffuse/specular/transmission)" : "No")")
             ThreadSafeLogger.shared.logln("")
             ThreadSafeLogger.shared.logln("  Geometry:")
             ThreadSafeLogger.shared.logln("    Spheres          : \(gpuSpheres.count)")
@@ -463,22 +464,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // 创建自适应渲染器
             let adaptiveRenderer = AdaptiveRenderer(context: context, baseRenderer: renderer, library: library)
 
-            // 执行自适应渲染
-            let (adaptivePixels, adaptiveTime, adaptiveStats) = adaptiveRenderer.renderAdaptive(
-                scene: scene,
-                camera: camera,
-                bvh: bvh,
-                sceneName: args.sceneName,
-                minSamples: minSpp,
-                targetSpp: targetSpp,
-                varianceThreshold: args.adaptiveVarianceThreshold,
-                relativeThreshold: args.adaptiveRelativeThreshold,
-                batchSize: args.adaptiveBatchSize,
-                filterType: args.filterType,
-                useBlueNoise: args.useBlueNoise,
-                useWeightedVariance: args.useWeightedVariance,
-                progressCallback: nil  // 进度打印已在 AdaptiveRenderer 内部处理
-            )
+            // 执行自适应渲染（AOV 多通道 或 标准单通道）
+            let adaptivePixels: [Float]
+            let adaptiveTime: TimeInterval
+            let adaptiveStats: AdaptiveStats
+            if args.useAOVAdaptive {
+                (adaptivePixels, adaptiveTime, adaptiveStats) = adaptiveRenderer.renderAdaptiveAOV(
+                    scene: scene,
+                    camera: camera,
+                    bvh: bvh,
+                    sceneName: args.sceneName,
+                    minSamples: minSpp,
+                    targetSpp: targetSpp,
+                    varianceThreshold: args.adaptiveVarianceThreshold,
+                    relativeThreshold: args.adaptiveRelativeThreshold,
+                    batchSize: args.adaptiveBatchSize,
+                    filterType: args.filterType,
+                    useBlueNoise: args.useBlueNoise,
+                    progressCallback: nil
+                )
+            } else {
+                (adaptivePixels, adaptiveTime, adaptiveStats) = adaptiveRenderer.renderAdaptive(
+                    scene: scene,
+                    camera: camera,
+                    bvh: bvh,
+                    sceneName: args.sceneName,
+                    minSamples: minSpp,
+                    targetSpp: targetSpp,
+                    varianceThreshold: args.adaptiveVarianceThreshold,
+                    relativeThreshold: args.adaptiveRelativeThreshold,
+                    batchSize: args.adaptiveBatchSize,
+                    filterType: args.filterType,
+                    useBlueNoise: args.useBlueNoise,
+                    useWeightedVariance: args.useWeightedVariance,
+                    progressCallback: nil  // 进度打印已在 AdaptiveRenderer 内部处理
+                )
+            }
 
             pixelData = adaptivePixels
             renderTime = adaptiveTime

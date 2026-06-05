@@ -316,6 +316,264 @@ kernel void raytrace(
     output.write(float4(accumulated, 1.0f), gid);
 }
 
+// ========== AOV 多通道路径追踪 ==========
+
+/// AOV 分通道结果（用于自适应采样的多通道方差判断）
+/// 能量守恒：beauty == diffuse + specular + transmission + emission
+struct AOVResult {
+    float3 beauty;
+    float3 diffuse;
+    float3 specular;
+    float3 transmission;
+    float3 emission;
+};
+
+/// 将辐射贡献累加到首段材质对应的通道
+/// channel: 0=diffuse, 1=specular, 2=transmission；-1 表示尚未散射（直接可见，归 emission）
+inline void aov_add(thread AOVResult& aov, int channel, float3 v) {
+    if (channel == 0)      aov.diffuse += v;
+    else if (channel == 1) aov.specular += v;
+    else if (channel == 2) aov.transmission += v;
+    else                   aov.emission += v;  // channel == -1：直接可见的光源/背景
+}
+
+/// 根据材质类型映射到 AOV 通道
+inline int aov_classify(uint mat_type) {
+    switch (mat_type) {
+        case MaterialMetal:      return 1;  // specular
+        case MaterialDielectric: return 2;  // transmission
+        case MaterialIsotropic:  return 0;  // 体积散射归 diffuse
+        default:                 return 0;  // Lambertian 等归 diffuse
+    }
+}
+
+/// 路径追踪（AOV 版本）：按首次散射材质把整条路径的辐射贡献分离到各通道
+/// 与 ray_color 的采样逻辑完全一致，仅在累加点按通道归类
+inline AOVResult ray_color_aov(
+    Ray r,
+    device const GPUBVHNode* bvh_nodes,
+    device const uint* geometry_indices,
+    device const GPUSphere* spheres,
+    uint sphere_count,
+    device const GPUQuad* quads,
+    uint quad_count,
+    device const GPUMaterial* materials,
+    device const GPUTexture* textures,
+    texture2d<float> image_texture,
+    constant float3* perlin_randvec,
+    constant int* perlin_perm_x,
+    constant int* perlin_perm_y,
+    constant int* perlin_perm_z,
+    device const GPUTransform* transforms,
+    device const uint* light_indices,
+    uint lights_count,
+    uint max_depth,
+    thread RandomState* rng,
+    bool use_background
+) {
+    AOVResult aov;
+    aov.beauty = float3(0.0f);
+    aov.diffuse = float3(0.0f);
+    aov.specular = float3(0.0f);
+    aov.transmission = float3(0.0f);
+    aov.emission = float3(0.0f);
+
+    Ray current_ray = r;
+    float3 throughput = float3(1.0f);
+    int channel = -1;  // 首段材质通道，-1 表示尚未散射
+
+    for (uint depth = 0; depth < max_depth; depth++) {
+        HitRecord rec;
+        bool hit_anything = bvh_hit(
+            bvh_nodes, geometry_indices, spheres, quads, transforms,
+            sphere_count, current_ray, 0.001f, 1e10f, &rec, rng
+        );
+
+        if (hit_anything) {
+            // 1. 自发光：直接可见(channel==-1)归 emission，间接命中归首段通道
+            float3 emission = material_emitted(materials, textures, image_texture,
+                                               perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z,
+                                               rec.material_index, rec);
+            aov_add(aov, channel, throughput * emission);
+
+            // 2. 材质散射（MIS 版本）
+            ScatterRecord srec;
+            if (!material_scatter_mis(materials, textures, image_texture,
+                                     perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z,
+                                     rec.material_index, current_ray, rec, &srec, rng)) {
+                break;
+            }
+
+            // 首次散射决定整条路径的归类通道
+            if (depth == 0) {
+                channel = aov_classify(materials[rec.material_index].type);
+            }
+
+            // 3. 镜面反射快速路径
+            if (srec.skip_pdf) {
+                throughput *= srec.attenuation;
+                current_ray = srec.skip_pdf_ray;
+                continue;
+            }
+
+            // 4. PDF 采样（与 ray_color 一致）
+            if (lights_count == 0) {
+                float3 scattered_dir = pdf_generate(srec.pdf, rec.p, rng, spheres, quads, light_indices, lights_count);
+                Ray scattered = {rec.p, scattered_dir, current_ray.time};
+                float pdf_val = pdf_value(srec.pdf, scattered_dir, rec.p, spheres, quads, transforms, light_indices, lights_count);
+                float scattering_pdf = material_scattering_pdf(materials, rec.material_index, current_ray, rec, scattered);
+                throughput *= srec.attenuation * (scattering_pdf / fmax(1e-6f, pdf_val));
+                current_ray = scattered;
+            } else {
+                uint light_idx = uint(random_float(rng) * float(lights_count)) % lights_count;
+                PDF light_pdf;
+                light_pdf.type = PDF_HITTABLE;
+                light_pdf.light_index = light_idx;
+                float3 scattered_dir;
+                if (random_float(rng) < 0.5f) {
+                    scattered_dir = pdf_generate(light_pdf, rec.p, rng, spheres, quads, light_indices, lights_count);
+                } else {
+                    scattered_dir = pdf_generate(srec.pdf, rec.p, rng, spheres, quads, light_indices, lights_count);
+                }
+                Ray scattered = {rec.p, scattered_dir, current_ray.time};
+                float light_pdf_val = pdf_value(light_pdf, scattered_dir, rec.p, spheres, quads, transforms, light_indices, lights_count);
+                float brdf_pdf_val = pdf_value(srec.pdf, scattered_dir, rec.p, spheres, quads, transforms, light_indices, lights_count);
+                float w_light = power_heuristic(light_pdf_val, brdf_pdf_val);
+                float w_brdf = 1.0f - w_light;
+                float pdf_val = w_light * light_pdf_val + w_brdf * brdf_pdf_val;
+                float scattering_pdf = material_scattering_pdf(materials, rec.material_index, current_ray, rec, scattered);
+                throughput *= srec.attenuation * (scattering_pdf / fmax(1e-6f, pdf_val));
+                current_ray = scattered;
+            }
+        } else {
+            // 击中背景：直接可见(channel==-1)归 emission，间接归首段通道
+            if (use_background) {
+                aov_add(aov, channel, throughput * background_color(current_ray));
+            }
+            break;
+        }
+    }
+
+    aov.beauty = aov.diffuse + aov.specular + aov.transmission + aov.emission;
+    return aov;
+}
+
+/// AOV 主内核：输出 5 个通道纹理（beauty/diffuse/specular/transmission/emission）
+kernel void raytrace_aov(
+    texture2d<float, access::read_write> beauty_out [[texture(0)]],
+    texture2d<float, access::read_write> diffuse_out [[texture(1)]],
+    texture2d<float, access::read_write> specular_out [[texture(2)]],
+    texture2d<float, access::read_write> transmission_out [[texture(3)]],
+    texture2d<float, access::read_write> emission_out [[texture(4)]],
+    texture2d<float> image_texture [[texture(5)]],
+    device const GPUSphere* spheres [[buffer(0)]],
+    device const GPUMaterial* materials [[buffer(1)]],
+    constant CameraParams& camera [[buffer(2)]],
+    constant RenderParams& params [[buffer(3)]],
+    device const GPUQuad* quads [[buffer(4)]],
+    device const GPUTexture* textures [[buffer(5)]],
+    device const GPUTransform* transforms [[buffer(6)]],
+    device const GPUBVHNode* bvh_nodes [[buffer(7)]],
+    device const uint* geometry_indices [[buffer(8)]],
+    constant float3* perlin_randvec [[buffer(9)]],
+    constant int* perlin_perm_x [[buffer(10)]],
+    constant int* perlin_perm_y [[buffer(11)]],
+    constant int* perlin_perm_z [[buffer(12)]],
+    device const uint* light_indices [[buffer(13)]],
+    device const uint* pixel_mask [[buffer(14)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) return;
+
+    if (pixel_mask != nullptr) {
+        uint pixel_idx = gid.y * params.width + gid.x;
+        if (pixel_mask[pixel_idx] == 0) return;
+    }
+
+    AOVResult acc;
+    acc.beauty = float3(0.0f);
+    acc.diffuse = float3(0.0f);
+    acc.specular = float3(0.0f);
+    acc.transmission = float3(0.0f);
+    acc.emission = float3(0.0f);
+    float total_weight = 0.0f;
+
+    // 分层采样 + 像素重建滤波器（与 raytrace 完全一致）
+    for (uint s_j = 0; s_j < params.sqrt_spp; s_j++) {
+        for (uint s_i = 0; s_i < params.sqrt_spp; s_i++) {
+            uint subpixel_index = s_j * params.sqrt_spp + s_i;
+            uint global_sample_index = params.sample_offset + subpixel_index;
+            uint seed = (gid.x * 1973u + gid.y * 9277u + global_sample_index * 26699u) ^ 0x6c078965u;
+            RandomState rng = random_init(seed);
+
+            float2 jitter;
+            if (params.use_blue_noise != 0) {
+                uint pixel_seed = gid.x * 1973u + gid.y * 9277u;
+                jitter = blue_noise_sample(global_sample_index, pixel_seed);
+            } else {
+                jitter = float2(random_float(&rng), random_float(&rng));
+            }
+
+            float px_offset = (float(s_i) + jitter.x) * params.recip_sqrt_spp;
+            float py_offset = (float(s_j) + jitter.y) * params.recip_sqrt_spp;
+            float px_filter = px_offset - 0.5f;
+            float py_filter = py_offset - 0.5f;
+            float filter_weight = evaluate_filter(params.filter_type, px_filter, py_filter);
+
+            float3 pixel_sample = camera.lower_left_corner +
+                                 (float(gid.x) + px_offset) * camera.horizontal +
+                                 (float(gid.y) + py_offset) * camera.vertical;
+
+            float3 ray_origin = camera.origin;
+            if (camera.defocus_angle > 0.0f) {
+                float3 p = random_in_unit_disk(&rng);
+                ray_origin = camera.origin + camera.defocus_disk_u * p.x + camera.defocus_disk_v * p.y;
+            }
+
+            Ray r;
+            r.origin = ray_origin;
+            r.direction = normalize(pixel_sample - ray_origin);
+            r.time = 0.0f;
+
+            AOVResult aov = ray_color_aov(r, bvh_nodes, geometry_indices,
+                                spheres, params.sphere_count, quads, params.quad_count,
+                                materials, textures, image_texture,
+                                perlin_randvec, perlin_perm_x, perlin_perm_y, perlin_perm_z,
+                                transforms, light_indices, params.lights_count,
+                                params.max_depth, &rng, params.use_background != 0);
+
+            // 逐通道 NaN 清理
+            aov.beauty       = select(aov.beauty,       float3(0.0f), aov.beauty       != aov.beauty);
+            aov.diffuse      = select(aov.diffuse,      float3(0.0f), aov.diffuse      != aov.diffuse);
+            aov.specular     = select(aov.specular,     float3(0.0f), aov.specular     != aov.specular);
+            aov.transmission = select(aov.transmission, float3(0.0f), aov.transmission != aov.transmission);
+            aov.emission     = select(aov.emission,     float3(0.0f), aov.emission     != aov.emission);
+
+            acc.beauty       += aov.beauty       * filter_weight;
+            acc.diffuse      += aov.diffuse      * filter_weight;
+            acc.specular     += aov.specular     * filter_weight;
+            acc.transmission += aov.transmission * filter_weight;
+            acc.emission     += aov.emission     * filter_weight;
+            total_weight     += filter_weight;
+        }
+    }
+
+    if (total_weight > 0.0f) {
+        acc.beauty       /= total_weight;
+        acc.diffuse      /= total_weight;
+        acc.specular     /= total_weight;
+        acc.transmission /= total_weight;
+        acc.emission     /= total_weight;
+    }
+
+    // 累积到输出纹理（自适应模式每批次使用新纹理，prev=0）
+    beauty_out.write(float4(beauty_out.read(gid).rgb + acc.beauty, 1.0f), gid);
+    diffuse_out.write(float4(diffuse_out.read(gid).rgb + acc.diffuse, 1.0f), gid);
+    specular_out.write(float4(specular_out.read(gid).rgb + acc.specular, 1.0f), gid);
+    transmission_out.write(float4(transmission_out.read(gid).rgb + acc.transmission, 1.0f), gid);
+    emission_out.write(float4(emission_out.read(gid).rgb + acc.emission, 1.0f), gid);
+}
+
 /// 实时窗口模式渲染内核
 /// 与 raytrace 的区别：输出平均值而不是累积值，适合外部累积器
 kernel void raytrace_realtime(

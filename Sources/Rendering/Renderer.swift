@@ -123,6 +123,109 @@ class Renderer {
         return outputTexture
     }
 
+    /// 渲染场景到 5 个 AOV 通道纹理（用于 AOV 自适应采样）
+    /// 返回顺序与 accumulate_samples_aov 的纹理槽位一致：beauty/diffuse/specular/transmission/emission
+    /// - Parameter aovPipeline: raytrace_aov 计算管线（由 AdaptiveRenderer 持有并传入）
+    func renderToTexturesAOV(
+        scene: Scene,
+        camera: Camera,
+        bvh: FlatBVH,
+        buffers: GPUBuffers,
+        sphereCount: Int,
+        quadCount: Int,
+        aovPipeline: MTLComputePipelineState,
+        batchSize: Int = 1,
+        sampleOffset: UInt32 = 0,
+        filterType: FilterType = .box,
+        useBlueNoise: Bool = false,
+        pixelMask: MTLBuffer? = nil
+    ) -> (beauty: MTLTexture, diffuse: MTLTexture, specular: MTLTexture, transmission: MTLTexture, emission: MTLTexture)? {
+        // 创建 5 个 AOV 输出纹理（RGBA32Float，初始为 0）
+        guard let beauty = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight),
+              let diffuse = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight),
+              let specular = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight),
+              let transmission = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight),
+              let emission = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight) else {
+            return nil
+        }
+
+        let samplesPerPixel = UInt32(batchSize)
+        let maxDepth = scene.camera.maxDepth
+        let useBackground: UInt32 = scene.camera.useBackground ? 1 : 0
+
+        let sqrtSpp = UInt32(sqrt(Double(samplesPerPixel)))
+        let recipSqrtSpp = Float(1.0) / Float(sqrtSpp)
+        let actualSamplesPerPixel = sqrtSpp * sqrtSpp
+
+        var renderParams = GPURenderParams(
+            width: UInt32(camera.imageWidth),
+            height: UInt32(camera.imageHeight),
+            samplesPerPixel: actualSamplesPerPixel,
+            maxDepth: maxDepth,
+            sphereCount: UInt32(sphereCount),
+            quadCount: UInt32(quadCount),
+            useBackground: useBackground,
+            sampleOffset: sampleOffset,
+            useBVH: 1,
+            bvhNodeCount: UInt32(bvh.nodes.count),
+            lightsCount: UInt32(scene.lights.count),
+            useMIS: 1,
+            sqrtSpp: sqrtSpp,
+            filterType: filterType.gpuValue,
+            useBlueNoise: useBlueNoise ? 1 : 0,
+            recipSqrtSpp: recipSqrtSpp,
+            padding2: SIMD2<Float>(0, 0)
+        )
+
+        var cameraParams = camera.gpuParams
+
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+
+        computeEncoder.setComputePipelineState(aovPipeline)
+        // 5 个 AOV 输出纹理（texture 0-4）+ 图片纹理（texture 5）
+        computeEncoder.setTexture(beauty, index: 0)
+        computeEncoder.setTexture(diffuse, index: 1)
+        computeEncoder.setTexture(specular, index: 2)
+        computeEncoder.setTexture(transmission, index: 3)
+        computeEncoder.setTexture(emission, index: 4)
+        if !scene.imageTextures.isEmpty {
+            computeEncoder.setTexture(scene.imageTextures[0], index: 5)
+        }
+
+        computeEncoder.setBuffer(buffers.sphereBuffer, offset: 0, index: 0)
+        computeEncoder.setBuffer(buffers.materialBuffer, offset: 0, index: 1)
+        computeEncoder.setBytes(&cameraParams, length: MemoryLayout<GPUCameraParams>.size, index: 2)
+        computeEncoder.setBytes(&renderParams, length: MemoryLayout<GPURenderParams>.size, index: 3)
+        computeEncoder.setBuffer(buffers.quadBuffer, offset: 0, index: 4)
+        computeEncoder.setBuffer(buffers.textureBuffer, offset: 0, index: 5)
+        computeEncoder.setBuffer(buffers.transformBuffer, offset: 0, index: 6)
+        computeEncoder.setBuffer(buffers.bvhNodeBuffer, offset: 0, index: 7)
+        computeEncoder.setBuffer(buffers.geometryIndexBuffer, offset: 0, index: 8)
+        computeEncoder.setBuffer(buffers.perlinRandvecBuffer, offset: 0, index: 9)
+        computeEncoder.setBuffer(buffers.perlinPermXBuffer, offset: 0, index: 10)
+        computeEncoder.setBuffer(buffers.perlinPermYBuffer, offset: 0, index: 11)
+        computeEncoder.setBuffer(buffers.perlinPermZBuffer, offset: 0, index: 12)
+        computeEncoder.setBuffer(buffers.lightIndexBuffer, offset: 0, index: 13)
+        if let mask = pixelMask {
+            computeEncoder.setBuffer(mask, offset: 0, index: 14)
+        } else {
+            computeEncoder.setBuffer(nil, offset: 0, index: 14)
+        }
+
+        let threadsPerGrid = MTLSize(width: camera.imageWidth, height: camera.imageHeight, depth: 1)
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        computeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+
+        computeEncoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        return (beauty, diffuse, specular, transmission, emission)
+    }
+
     /// 渲染场景到像素数据（用于离线模式）
     /// - Parameters:
     ///   - scene: 场景

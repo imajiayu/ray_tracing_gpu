@@ -29,6 +29,7 @@ struct CommandLineArgs {
     var filterType: FilterType = .box  // 像素重建滤波器，默认 box（均匀平均）
     var useBlueNoise: Bool = false  // 是否使用蓝噪声采样（R2 序列），默认 false（伪随机）
     var useWeightedVariance: Bool = false  // 是否使用材质加权方差（针对镜面/玻璃优化），默认 false
+    var useAOVAdaptive: Bool = false  // 是否使用 AOV 多通道自适应采样（diffuse/specular/transmission 分通道方差），默认 false
 
     // 自适应采样高级参数（仅限 image 模式）
     var adaptiveVarianceThreshold: Float = 0.0000001  // 方差阈值，默认 1e-07（批量采样校准）
@@ -156,6 +157,10 @@ struct CommandLineArgs {
                                   针对镜面反射/玻璃透射优化
                                   根据像素颜色特征估计材质类型
                                   对高亮区域（镜面/玻璃）使用更严格的阈值
+          --aov                     启用 AOV 多通道自适应采样（实验性）
+                                  按首次散射材质分离 diffuse/specular/transmission
+                                  各通道独立计算方差，取最大值判断收敛
+                                  比 --weighted-variance 更精确，对玻璃/金属噪点更友好
                                   推荐: Cornell Box 等包含镜面/玻璃的场景
                                   系统默认: 关闭（标准方差）
           --adaptive-threshold <val> 方差阈值（绝对值）
@@ -445,6 +450,10 @@ struct CommandLineArgs {
 
             case "--weighted-variance":
                 args.useWeightedVariance = true
+                i += 1
+
+            case "--aov":
+                args.useAOVAdaptive = true
                 i += 1
 
             case "--adaptive-threshold":
