@@ -153,3 +153,29 @@ struct GPURenderParams {
     var recipSqrtSpp: Float  // 1.0 / sqrtSpp - 避免 GPU 除法
     var padding2: SIMD2<Float>  // 对齐填充（16字节对齐）
 }
+
+// MARK: - 自适应采样
+
+/// 自适应采样参数（64 bytes 对齐）
+struct AdaptiveSamplingParams {
+    var minSamples: UInt32          // 最小采样数（如 16）
+    var targetSpp: UInt32           // 目标总采样数（用户设置的 --spp）
+    var varianceThreshold: Float    // 方差阈值（如 0.0001）
+    var adaptiveBatchSize: UInt32   // 每批次增量（如 8）
+    var width: UInt32               // 图像宽度
+    var height: UInt32              // 图像高度
+    var currentPass: UInt32         // 当前采样轮次
+    var adaptiveRelativeThreshold: Float  // 相对误差阈值（如 0.01 = 1%）
+    var totalBudget: UInt64         // 总采样预算 = width × height × targetSpp
+    var usedBudget: UInt64          // 已使用的采样数
+}  // Total: 64 bytes
+
+/// 全局统计数据（用于进度跟踪，32 bytes）
+struct AdaptiveGlobalStats {
+    var totalConvergedPixels: UInt32    // 已收敛像素数
+    var padding1: UInt32                // 对齐
+    var totalSamplesUsed: UInt64        // 总采样数
+    var averageVariance: Float          // 平均方差
+    var maxVariance: Float              // 最大方差
+    var padding2: SIMD2<Float>          // 对齐到 32 bytes
+}  // Total: 32 bytes

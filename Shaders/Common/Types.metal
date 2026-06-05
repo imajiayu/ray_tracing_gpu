@@ -150,4 +150,72 @@ enum FilterType : uint {
     FILTER_LANCZOS = 4
 };
 
+// ========== 自适应采样 ==========
+
+/// 自适应采样参数（64 bytes 对齐）
+struct AdaptiveSamplingParams {
+    uint min_samples;               // 最小采样数（如 16）
+    uint target_spp;                // 目标总采样数（用户设置的 --spp）
+    float variance_threshold;       // 方差阈值（如 0.0001）
+    uint adaptive_batch_size;       // 每批次增量（如 8）
+    uint width;                     // 图像宽度
+    uint height;                    // 图像高度
+    uint current_pass;              // 当前采样轮次
+    float adaptive_relative_threshold;  // 相对误差阈值（如 0.01 = 1%）
+    uint64_t total_budget;          // 总采样预算 = width × height × target_spp
+    uint64_t used_budget;           // 已使用的采样数
+};  // Total: 64 bytes
+
+/// 全局统计数据（32 bytes）
+struct AdaptiveGlobalStats {
+    uint total_converged_pixels;    // 已收敛像素数
+    uint padding1;                  // 对齐
+    uint64_t total_samples_used;    // 总采样数（需要 Metal 3.0+）
+    float average_variance;         // 平均方差
+    float max_variance;             // 最大方差
+    float2 padding2;                // 对齐到 32 bytes
+};  // Total: 32 bytes
+
+// ========== AOV (Arbitrary Output Variables) ==========
+
+/// AOV通道枚举
+enum AOVChannel : uint {
+    // 渲染AOV（用于自适应采样方差计算）
+    AOV_BEAUTY = 0,         // 最终合成图像（所有通道之和）
+    AOV_DIFFUSE = 1,        // Lambertian 漫反射
+    AOV_SPECULAR = 2,       // Metal 镜面反射
+    AOV_TRANSMISSION = 3,   // Dielectric 透射/折射
+    AOV_VOLUME = 4,         // Isotropic 体积散射
+    AOV_EMISSION = 5,       // DiffuseLight 自发光
+
+    // 辅助AOV（用于降噪）
+    AOV_ALBEDO = 6,         // 表面反照率（首次bounce）
+    AOV_NORMAL = 7,         // 表面法线（首次bounce）
+    AOV_DEPTH = 8,          // 深度（首次相交距离）
+
+    // 调试AOV
+    AOV_SAMPLE_COUNT = 9,   // 每像素采样数（存储在单独的buffer）
+
+    AOV_COUNT = 10          // 总通道数
+};
+
+/// AOV输出结构（用于路径追踪kernel的单次采样）
+/// 实际存储在多个texture中以减少带宽
+struct AOVOutput {
+    // Beauty channel (最终合成图像)
+    float3 beauty;          // diffuse + specular + transmission + volume + emission
+
+    // 分解通道（用于自适应采样的精确方差计算）
+    float3 diffuse;         // Lambertian贡献
+    float3 specular;        // Metal贡献
+    float3 transmission;    // Dielectric贡献
+    float3 volume;          // Isotropic贡献
+    float3 emission;        // 自发光
+
+    // 辅助通道（用于降噪）
+    float3 albedo;          // 首次bounce的材质反照率
+    float3 normal;          // 首次bounce的表面法线
+    float depth;            // 首次相交的深度值
+};
+
 #endif // TYPES_METAL

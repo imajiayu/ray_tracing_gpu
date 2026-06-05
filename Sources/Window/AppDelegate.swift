@@ -390,10 +390,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         applyCommandLineArgs(args: args, scene: &scene)
 
         // 生成默认输出文件名（如果用户未指定 --output）
-        var outputFilename = args.outputFile
-        if outputFilename == "output.ppm" {
+        var outputFilename: String
+        if let userFilename = args.outputFile {
+            // 用户明确指定了文件名
+            outputFilename = ensureUniqueFilename(userFilename)
+        } else {
             // 用户未指定输出文件名，使用自动生成的文件名
-            outputFilename = args.generateDefaultOutputFilename(scene: scene)
+            let generatedFilename = args.generateDefaultOutputFilename(scene: scene)
+            outputFilename = ensureUniqueFilename(generatedFilename)
             ThreadSafeLogger.shared.logln("ℹ️  Auto-generated output filename: \(outputFilename)")
         }
 
@@ -417,56 +421,161 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 8. 创建相机
         let camera = Camera(config: scene.camera)
 
-        // 9. 创建统计对象
-        let batchSize = args.getEffectiveBatchSize()
-        let samplesPerBatch = UInt32(batchSize)
-        let totalBatches = Int((scene.camera.samplesPerPixel + samplesPerBatch - 1) / samplesPerBatch)
-
-        let stats = ImageRenderStats(
-            sceneName: args.sceneName,
-            width: camera.imageWidth,
-            height: camera.imageHeight,
-            spp: Int(scene.camera.samplesPerPixel),
-            maxDepth: Int(scene.camera.maxDepth),
-            totalBatches: totalBatches,
-            cameraConfig: scene.camera,
-            filterType: args.filterType,
-            useBlueNoise: args.useBlueNoise,
-            tonemapMode: args.tonemapMode,
-            bloomStrength: args.bloomStrength,
-            bloomThreshold: args.bloomThreshold
-        )
-
-        // 打印头部信息
-        stats.printHeader(
-            sphereCount: gpuSpheres.count,
-            quadCount: gpuQuads.count,
-            bvhNodeCount: bvh.nodes.count,
-            lightsCount: scene.lights.count
-        )
-
-        // 10. 执行渲染（带进度回调）
+        // 9. 创建渲染器
         let renderer = Renderer(context: context, pipeline: pipeline)
-        let (pixelData, renderTime) = renderer.render(
-            scene: scene,
-            camera: camera,
-            bvh: bvh,
-            batchSize: batchSize,
-            filterType: args.filterType,
-            useBlueNoise: args.useBlueNoise,
-            progressCallback: { batch in
-                stats.updateProgress(batch: batch, samplesPerBatch: batchSize)
+
+        // 检查是否使用自适应采样
+        let pixelData: [Float]
+        let renderTime: TimeInterval
+
+        if args.useAdaptiveSampling {
+            // ===== 自适应采样模式 =====
+            guard let minSpp = args.minSpp else {
+                fatalError("Internal error: useAdaptiveSampling is true but minSpp is nil")
             }
-        )
+            let targetSpp = args.spp ?? Int(scene.camera.samplesPerPixel)
+            let totalBudget = camera.imageWidth * camera.imageHeight * targetSpp
+
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("╔═════════════════════════════════════════════════════════════════════╗")
+            ThreadSafeLogger.shared.logln("║ 🎯 Adaptive Sampling (Fixed Budget)                                 ║")
+            ThreadSafeLogger.shared.logln("╚═════════════════════════════════════════════════════════════════════╝")
+            ThreadSafeLogger.shared.logln("  Scene              : \(args.sceneName)")
+            ThreadSafeLogger.shared.logln("  Resolution         : \(camera.imageWidth) × \(camera.imageHeight)")
+            ThreadSafeLogger.shared.logln("  Min SPP            : \(minSpp) (guaranteed for all pixels)")
+            ThreadSafeLogger.shared.logln("  Target SPP         : \(targetSpp) (total budget)")
+            ThreadSafeLogger.shared.logln("  Total Budget       : \(totalBudget) samples")
+            ThreadSafeLogger.shared.logln("  Variance Threshold : \(args.adaptiveVarianceThreshold)")
+            ThreadSafeLogger.shared.logln("  Relative Error     : \(args.adaptiveRelativeThreshold)")
+            ThreadSafeLogger.shared.logln("  Batch Size         : \(args.adaptiveBatchSize)")
+            ThreadSafeLogger.shared.logln("  Max Depth          : \(scene.camera.maxDepth)")
+            ThreadSafeLogger.shared.logln("  Filter             : \(args.filterType.description)")
+            ThreadSafeLogger.shared.logln("  Blue Noise         : \(args.useBlueNoise ? "Yes" : "No")")
+            ThreadSafeLogger.shared.logln("  Weighted Variance  : \(args.useWeightedVariance ? "Yes (Material-aware)" : "No (Standard)")")
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("  Geometry:")
+            ThreadSafeLogger.shared.logln("    Spheres          : \(gpuSpheres.count)")
+            ThreadSafeLogger.shared.logln("    Quads            : \(gpuQuads.count)")
+            ThreadSafeLogger.shared.logln("    BVH Nodes        : \(bvh.nodes.count)")
+            ThreadSafeLogger.shared.logln("    Lights           : \(scene.lights.count)")
+            ThreadSafeLogger.shared.logln("")
+
+            // 创建自适应渲染器
+            let adaptiveRenderer = AdaptiveRenderer(context: context, baseRenderer: renderer, library: library)
+
+            // 执行自适应渲染
+            let (adaptivePixels, adaptiveTime, adaptiveStats) = adaptiveRenderer.renderAdaptive(
+                scene: scene,
+                camera: camera,
+                bvh: bvh,
+                sceneName: args.sceneName,
+                minSamples: minSpp,
+                targetSpp: targetSpp,
+                varianceThreshold: args.adaptiveVarianceThreshold,
+                relativeThreshold: args.adaptiveRelativeThreshold,
+                batchSize: args.adaptiveBatchSize,
+                filterType: args.filterType,
+                useBlueNoise: args.useBlueNoise,
+                useWeightedVariance: args.useWeightedVariance,
+                progressCallback: nil  // 进度打印已在 AdaptiveRenderer 内部处理
+            )
+
+            pixelData = adaptivePixels
+            renderTime = adaptiveTime
+
+            // 打印自适应采样统计
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("╔═════════════════════════════════════════════════════════════════════╗")
+            ThreadSafeLogger.shared.logln("║ 📊 Adaptive Sampling Statistics                                     ║")
+            ThreadSafeLogger.shared.logln("╚═════════════════════════════════════════════════════════════════════╝")
+            ThreadSafeLogger.shared.logln("  Total Render Time  : \(String(format: "%.2f", adaptiveTime * 1000)) ms")
+            ThreadSafeLogger.shared.logln("  Iterations         : \(adaptiveStats.iterationCount)")
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("  SPP Distribution:")
+            ThreadSafeLogger.shared.logln("    Average          : \(String(format: "%.1f", adaptiveStats.averageSpp))")
+            ThreadSafeLogger.shared.logln("    Min              : \(adaptiveStats.minSpp)")
+            ThreadSafeLogger.shared.logln("    25th Percentile  : \(adaptiveStats.percentile25Spp)")
+            ThreadSafeLogger.shared.logln("    50th Percentile  : \(adaptiveStats.percentile50Spp)")
+            ThreadSafeLogger.shared.logln("    75th Percentile  : \(adaptiveStats.percentile75Spp)")
+            ThreadSafeLogger.shared.logln("    Max              : \(adaptiveStats.maxSpp)")
+            ThreadSafeLogger.shared.logln("")
+            ThreadSafeLogger.shared.logln("  Efficiency:")
+            ThreadSafeLogger.shared.logln("    Samples Saved    : \(String(format: "%.1f%%", adaptiveStats.samplesSavedPercent * 100))")
+
+            let theoreticalTime = renderTime / Double(adaptiveStats.averageSpp) * Double(targetSpp)
+            let speedup = theoreticalTime / renderTime
+            ThreadSafeLogger.shared.logln("    Speedup vs Fixed : \(String(format: "%.2fx", speedup)) (vs \(targetSpp) spp fixed)")
+            ThreadSafeLogger.shared.logln("")
+
+        } else {
+            // ===== 传统固定采样模式 =====
+            let batchSize = args.getEffectiveBatchSize()
+            let samplesPerBatch = UInt32(batchSize)
+            let totalBatches = Int((scene.camera.samplesPerPixel + samplesPerBatch - 1) / samplesPerBatch)
+
+            let stats = ImageRenderStats(
+                sceneName: args.sceneName,
+                width: camera.imageWidth,
+                height: camera.imageHeight,
+                spp: Int(scene.camera.samplesPerPixel),
+                maxDepth: Int(scene.camera.maxDepth),
+                totalBatches: totalBatches,
+                cameraConfig: scene.camera,
+                filterType: args.filterType,
+                useBlueNoise: args.useBlueNoise,
+                tonemapMode: args.tonemapMode,
+                bloomStrength: args.bloomStrength,
+                bloomThreshold: args.bloomThreshold
+            )
+
+            // 打印头部信息
+            stats.printHeader(
+                sphereCount: gpuSpheres.count,
+                quadCount: gpuQuads.count,
+                bvhNodeCount: bvh.nodes.count,
+                lightsCount: scene.lights.count
+            )
+
+            // 执行渲染（带进度回调）
+            let (pixels, time) = renderer.render(
+                scene: scene,
+                camera: camera,
+                bvh: bvh,
+                batchSize: batchSize,
+                filterType: args.filterType,
+                useBlueNoise: args.useBlueNoise,
+                progressCallback: { batch in
+                    stats.updateProgress(batch: batch, samplesPerBatch: batchSize)
+                }
+            )
+
+            pixelData = pixels
+            renderTime = time
+
+            // 打印总结
+            stats.printSummary(renderTime: renderTime)
+        }
 
         // 11. 应用 Bloom 效果（如果启用）
         var finalPixelData = pixelData
         if args.bloomStrength > 0.0 {
+            let sppForBloom: UInt32
+            if args.useAdaptiveSampling {
+                // 自适应采样：像素已经归一化，使用 1
+                sppForBloom = 1
+            } else {
+                // 传统模式：使用 batch 数量
+                let batchSize = args.getEffectiveBatchSize()
+                let samplesPerBatch = UInt32(batchSize)
+                let totalBatches = Int((scene.camera.samplesPerPixel + samplesPerBatch - 1) / samplesPerBatch)
+                sppForBloom = UInt32(totalBatches)
+            }
+
             finalPixelData = applyBloomToPixelData(
                 pixelData: pixelData,
                 width: camera.imageWidth,
                 height: camera.imageHeight,
-                spp: UInt32(totalBatches),  // GPU 端已归一化，这里传递 batch 数量
+                spp: sppForBloom,
                 bloomStrength: args.bloomStrength,
                 bloomThreshold: args.bloomThreshold,
                 context: context,
@@ -475,20 +584,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // 12. 保存结果
-        // GPU 端每个 batch 已经归一化（除以了 sqrt_spp * sqrt_spp）
-        // 纹理中累积的是多个 batch 的平均值之和，所以需要除以 batch 数量
         var mutablePixelData = finalPixelData
-        ImageWriter.averageAndSavePPM(
-            accumulatedPixels: &mutablePixelData,
-            samplesPerPixel: UInt32(totalBatches),
-            width: camera.imageWidth,
-            height: camera.imageHeight,
-            filename: outputFilename,
-            tonemapMode: args.tonemapMode
-        )
 
-        // 13. 打印总结
-        stats.printSummary(renderTime: renderTime)
+        if args.useAdaptiveSampling {
+            // 自适应采样：像素已经在 GPU 端归一化，直接保存（spp=1 表示不再归一化）
+            ImageWriter.averageAndSavePPM(
+                accumulatedPixels: &mutablePixelData,
+                samplesPerPixel: 1,
+                width: camera.imageWidth,
+                height: camera.imageHeight,
+                filename: outputFilename,
+                tonemapMode: args.tonemapMode
+            )
+        } else {
+            // 传统模式：需要除以 batch 数量
+            let batchSize = args.getEffectiveBatchSize()
+            let samplesPerBatch = UInt32(batchSize)
+            let totalBatches = Int((scene.camera.samplesPerPixel + samplesPerBatch - 1) / samplesPerBatch)
+
+            ImageWriter.averageAndSavePPM(
+                accumulatedPixels: &mutablePixelData,
+                samplesPerPixel: UInt32(totalBatches),
+                width: camera.imageWidth,
+                height: camera.imageHeight,
+                filename: outputFilename,
+                tonemapMode: args.tonemapMode
+            )
+        }
 
         ThreadSafeLogger.shared.logln("")
         ThreadSafeLogger.shared.logln("✅ Output: \(outputFilename)")
@@ -600,6 +722,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         print("[Bloom] ✓ Bloom 应用完成")
         return outputData
+    }
+
+    /// 确保文件名唯一（如果文件已存在，添加时间戳后缀）
+    func ensureUniqueFilename(_ filename: String) -> String {
+        let fileManager = FileManager.default
+        let url = URL(fileURLWithPath: filename)
+        let directory = url.deletingLastPathComponent().path
+        let basename = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+
+        // 检查文件是否存在
+        guard fileManager.fileExists(atPath: filename) else {
+            return filename
+        }
+
+        // 文件存在，生成带时间戳的新文件名
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+
+        let newFilename: String
+        if directory.isEmpty || directory == "." {
+            newFilename = "\(basename)_\(timestamp).\(ext)"
+        } else {
+            newFilename = "\(directory)/\(basename)_\(timestamp).\(ext)"
+        }
+
+        ThreadSafeLogger.shared.logln("⚠️  文件 '\(filename)' 已存在")
+        ThreadSafeLogger.shared.logln("ℹ️  使用新文件名: \(newFilename)")
+
+        return newFilename
     }
 
     func applyCommandLineArgs(args: CommandLineArgs, scene: inout Scene) {

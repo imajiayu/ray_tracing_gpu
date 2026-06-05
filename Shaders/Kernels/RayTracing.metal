@@ -203,11 +203,20 @@ kernel void raytrace(
     constant int* perlin_perm_y [[buffer(11)]],
     constant int* perlin_perm_z [[buffer(12)]],
     device const uint* light_indices [[buffer(13)]],
+    device const uint* pixel_mask [[buffer(14)]],              // 可选：像素掩码（1=渲染，0=跳过）
     uint2 gid [[thread_position_in_grid]]
 ) {
     // 边界检查
     if (gid.x >= params.width || gid.y >= params.height) {
         return;
+    }
+
+    // 如果提供了掩码且当前像素标记为跳过，则直接返回，避免对已收敛像素进行光线追踪
+    if (pixel_mask != nullptr) {
+        uint pixel_idx = gid.y * params.width + gid.x;
+        if (pixel_mask[pixel_idx] == 0) {
+            return;
+        }
     }
 
     float3 pixel_color = float3(0.0f);

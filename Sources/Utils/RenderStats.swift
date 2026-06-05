@@ -49,6 +49,40 @@ class ThreadSafeLogger {
         lastLineWasProgress = true
     }
 
+    /// 更新多行进度条（覆盖前两行，避免累积换行）
+    func updateProgressMultiLine(line1: String, line2: String, isFinal: Bool = false) {
+        mutex.lock()
+        defer { mutex.unlock() }
+
+        // 如果上一条是进度，先回退并清空两行
+        if lastLineWasProgress {
+            // 当前光标在第二行末尾（因为上次输出时 terminator: ""）
+            // 需要上移两行并清空：
+            // 1. \r 回到第二行行首
+            // 2. [1A 上移到第一行末尾
+            // 3. [2K 清空第一行（光标在第一行行首）
+            // 4. [1B 下移到第二行行首
+            // 5. [2K 清空第二行（光标在第二行行首）
+            // 6. \r 确保在行首
+            print("\r\u{001B}[1A\u{001B}[2K\u{001B}[1B\u{001B}[2K\r", terminator: "")
+        }
+
+        // 写入两行：第一行 + 换行 + 第二行
+        let output = "\(line1)\n\(line2)"
+
+        if isFinal {
+            // 最后一次：输出并换行
+            print(output)
+            lastLineWasProgress = false
+        } else {
+            // 中间更新：输出但不换行，等待下次更新
+            // 光标会在第二行末尾
+            print(output, terminator: "")
+            fflush(stdout)
+            lastLineWasProgress = true
+        }
+    }
+
     /// 完成进度（换行）
     func finishProgress(_ message: String) {
         mutex.lock()
@@ -352,5 +386,158 @@ class WindowRenderStats {
     /// 获取当前 FPS
     func getCurrentFPS() -> Double {
         return fpsSmooth
+    }
+}
+
+/// 自适应采样渲染统计
+class AdaptiveRenderStats {
+    private let sceneName: String
+    private let width: Int
+    private let height: Int
+    private let minSpp: Int
+    private let targetSpp: Int
+    private let maxDepth: Int
+    private let totalBudget: UInt64
+    private let cameraConfig: CameraConfig
+    private let filterType: FilterType
+    private let useBlueNoise: Bool
+    private let tonemapMode: TonemapMode
+    private let bloomStrength: Float
+    private let bloomThreshold: Float
+
+    private let startTime: Date
+    private let logger = ThreadSafeLogger.shared
+
+    init(sceneName: String, width: Int, height: Int, minSpp: Int, targetSpp: Int, maxDepth: Int, totalBudget: UInt64, cameraConfig: CameraConfig, filterType: FilterType = .box, useBlueNoise: Bool = false, tonemapMode: TonemapMode = .none, bloomStrength: Float = 0.0, bloomThreshold: Float = 1.0) {
+        self.sceneName = sceneName
+        self.width = width
+        self.height = height
+        self.minSpp = minSpp
+        self.targetSpp = targetSpp
+        self.maxDepth = maxDepth
+        self.totalBudget = totalBudget
+        self.cameraConfig = cameraConfig
+        self.filterType = filterType
+        self.useBlueNoise = useBlueNoise
+        self.tonemapMode = tonemapMode
+        self.bloomStrength = bloomStrength
+        self.bloomThreshold = bloomThreshold
+        self.startTime = Date()
+    }
+
+    /// 更新 Phase 1 进度（初始均匀采样）
+    func updatePhase1Progress(currentSamples: Int, totalSamples: Int, samplesPerBatch: Int) {
+        let progress = Double(currentSamples) / Double(totalSamples)
+        let barWidth = 24  // 控制宽度，避免过长
+        let filled = Int(progress * Double(barWidth))
+
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        var progressBar = "["
+        for i in 0..<barWidth {
+            if i < filled {
+                progressBar += "█"
+            } else {
+                progressBar += "░"
+            }
+        }
+        progressBar += "] Phase 1 \(String(format: "%5.1f", progress * 100))%"
+
+        // 单行显示：进度条 + 详细信息
+        var progressLine = progressBar
+        progressLine += " | Samples \(currentSamples)/\(totalSamples)"
+        if currentSamples > 0 && currentSamples < totalSamples {
+            let avgTimePerSample = elapsed / Double(currentSamples)
+            let remainingSamples = totalSamples - currentSamples
+            let eta = avgTimePerSample * Double(remainingSamples)
+
+            progressLine += " | ETA "
+            if eta < 1 {
+                progressLine += String(format: "%3dms", Int(eta * 1000))
+            } else if eta < 60 {
+                progressLine += String(format: "%4.1fs", eta)
+            } else {
+                let minutes = Int(eta / 60)
+                let seconds = Int(eta.truncatingRemainder(dividingBy: 60))
+                progressLine += String(format: "%dm%02ds", minutes, seconds)
+            }
+
+            let totalPixels = width * height
+            let raysPerSecond = Double(totalPixels * currentSamples) / elapsed
+            progressLine += String(format: " | %.1fM rays/s", raysPerSecond / 1_000_000)
+        }
+
+        // 使用单行进度条，避免多行 ANSI 序列的问题
+        if currentSamples >= totalSamples {
+            logger.finishProgress(progressLine)
+        } else {
+            logger.updateProgress(progressLine)
+        }
+    }
+
+    /// 更新 Phase 2 进度（自适应采样）
+    func updatePhase2Progress(usedBudget: UInt64, averageSpp: Float, convergedPercent: Float, iteration: Int) {
+        let progress = Double(usedBudget) / Double(totalBudget)
+        let barWidth = 24
+        let filled = Int(progress * Double(barWidth))
+
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        var progressBar = "["
+        for i in 0..<barWidth {
+            if i < filled {
+                progressBar += "█"
+            } else {
+                progressBar += "░"
+            }
+        }
+        progressBar += "] Phase 2 \(String(format: "%5.1f", progress * 100))%"
+
+        // 单行显示：进度条 + 详细信息
+        var progressLine = progressBar
+        progressLine += String(format: " | Avg spp %.1f | Converged %.1f%%", averageSpp, convergedPercent)
+        if usedBudget > 0 && usedBudget < totalBudget {
+            let avgTimePerBudget = elapsed / Double(usedBudget)
+            let remainingBudget = totalBudget - usedBudget
+            let eta = avgTimePerBudget * Double(remainingBudget)
+
+            progressLine += " | ETA "
+            if eta < 1 {
+                progressLine += String(format: "%3dms", Int(eta * 1000))
+            } else if eta < 60 {
+                progressLine += String(format: "%4.1fs", eta)
+            } else {
+                let minutes = Int(eta / 60)
+                let seconds = Int(eta.truncatingRemainder(dividingBy: 60))
+                progressLine += String(format: "%dm%02ds", minutes, seconds)
+            }
+
+            let raysPerSecond = Double(usedBudget) / elapsed
+            progressLine += String(format: " | %.1fM rays/s", raysPerSecond / 1_000_000)
+        }
+
+        // 使用单行进度条，避免多行 ANSI 序列的问题
+        logger.updateProgress(progressLine)
+    }
+
+    /// 完成 Phase 2（最终状态）
+    func finishPhase2(usedBudget: UInt64, averageSpp: Float, convergedPercent: Float) {
+        let progress = Double(usedBudget) / Double(totalBudget)
+        let barWidth = 24
+        let filled = Int(progress * Double(barWidth))
+
+        var progressBar = "["
+        for i in 0..<barWidth {
+            if i < filled {
+                progressBar += "█"
+            } else {
+                progressBar += "░"
+            }
+        }
+        progressBar += "] Phase 2 \(String(format: "%5.1f", progress * 100))%"
+
+        let progressLine = progressBar + String(format: " | Avg spp %.1f | Converged %.1f%%", averageSpp, convergedPercent)
+
+        logger.finishProgress(progressLine)
     }
 }

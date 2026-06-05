@@ -37,7 +37,8 @@ class Renderer {
         batchSize: Int = 1,
         sampleOffset: UInt32 = 0,
         filterType: FilterType = .box,
-        useBlueNoise: Bool = false
+        useBlueNoise: Bool = false,
+        pixelMask: MTLBuffer? = nil  // 可选：像素掩码（1=渲染，0=跳过）
     ) -> MTLTexture? {
         // 创建输出纹理
         guard let outputTexture = context.makeTexture(width: camera.imageWidth, height: camera.imageHeight) else {
@@ -104,6 +105,11 @@ class Renderer {
         computeEncoder.setBuffer(buffers.perlinPermYBuffer, offset: 0, index: 11)
         computeEncoder.setBuffer(buffers.perlinPermZBuffer, offset: 0, index: 12)
         computeEncoder.setBuffer(buffers.lightIndexBuffer, offset: 0, index: 13)
+        if let mask = pixelMask {
+            computeEncoder.setBuffer(mask, offset: 0, index: 14)
+        } else {
+            computeEncoder.setBuffer(nil, offset: 0, index: 14)
+        }
 
         // 设置线程组大小
         let threadsPerGrid = MTLSize(width: camera.imageWidth, height: camera.imageHeight, depth: 1)

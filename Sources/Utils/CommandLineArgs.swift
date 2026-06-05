@@ -13,8 +13,9 @@ enum TonemapMode: String {
 struct CommandLineArgs {
     var sceneName: String = "bouncingSpheres"  // 默认场景（通常是索引 0）
     var mode: String = "image"  // "image" or "window"
-    var outputFile: String = "output.ppm"
+    var outputFile: String? = nil  // 输出文件名，nil 表示自动生成
     var spp: Int? = nil  // 总采样数，nil 表示使用默认值或场景值
+    var minSpp: Int? = nil  // 最小采样数（启用自适应采样，与 spp 配合使用）
     var batchSize: Int? = nil  // 每批 GPU 计算的采样数，nil 表示使用默认值
     var maxDepth: Int? = nil  // 最大反弹深度，nil 表示使用默认值或场景值
     var width: Int? = nil  // 图像宽度，nil 表示使用默认值或场景值
@@ -27,6 +28,17 @@ struct CommandLineArgs {
     var bloomThreshold: Float = 1.0  // Bloom 亮度阈值，默认 1.0
     var filterType: FilterType = .box  // 像素重建滤波器，默认 box（均匀平均）
     var useBlueNoise: Bool = false  // 是否使用蓝噪声采样（R2 序列），默认 false（伪随机）
+    var useWeightedVariance: Bool = false  // 是否使用材质加权方差（针对镜面/玻璃优化），默认 false
+
+    // 自适应采样高级参数（仅限 image 模式）
+    var adaptiveVarianceThreshold: Float = 0.0000001  // 方差阈值，默认 1e-07（批量采样校准）
+    var adaptiveRelativeThreshold: Float = 0.005  // 相对误差阈值，默认 0.005 (0.5%)
+    var adaptiveBatchSize: Int = 8  // 自适应批次大小，默认 8
+
+    // 计算属性：是否启用自适应采样
+    var useAdaptiveSampling: Bool {
+        return minSpp != nil
+    }
 
     // 获取实际的 batchSize（根据模式提供默认值）
     func getEffectiveBatchSize() -> Int {
@@ -75,9 +87,17 @@ struct CommandLineArgs {
         ┌──────────────────────────────────────────────────────────────────┐
         │ 渲染质量 (优先级: 用户设置 > 场景配置 > 系统默认)              │
         └──────────────────────────────────────────────────────────────────┘
-          --spp <num>           总采样数
+          --spp <num>           总采样数（固定或自适应的预算）
+                                  固定采样: 仅用 --spp
+                                  自适应采样: --spp + --min-spp
                                   推荐: 10-100 (预览), 500-1000 (高质量)
                                   系统默认: image 模式 1000, window 模式无限累积
+          --min-spp <num>       自适应采样：每个像素的最小采样数
+                                  必须配合 --spp 使用
+                                  总预算 = width × height × spp
+                                  每个像素至少采样 min-spp 次
+                                  剩余预算优先分配给高方差区域
+                                  推荐: 4-32
           --max-depth <num>     光线最大反弹深度
                                   推荐: 10-50
                                   系统默认: 50
@@ -130,10 +150,29 @@ struct CommandLineArgs {
                                   系统默认: 关闭（伪随机采样）
 
         ┌──────────────────────────────────────────────────────────────────┐
+        │ 自适应采样高级参数 (仅在使用 --min-spp 时有效)                   │
+        └──────────────────────────────────────────────────────────────────┘
+          --weighted-variance       启用材质加权方差（实验性）
+                                  针对镜面反射/玻璃透射优化
+                                  根据像素颜色特征估计材质类型
+                                  对高亮区域（镜面/玻璃）使用更严格的阈值
+                                  推荐: Cornell Box 等包含镜面/玻璃的场景
+                                  系统默认: 关闭（标准方差）
+          --adaptive-threshold <val> 方差阈值（绝对值）
+                                  更小 = 更高质量，更多采样
+                                  系统默认: 1e-07
+          --adaptive-relative-error <val> 相对误差阈值（百分比）
+                                  系统默认: 0.005 (0.5%)
+          --adaptive-batch-size <N> 每批次增量采样数
+                                  推荐范围: 4-16
+                                  系统默认: 8
+
+        ┌──────────────────────────────────────────────────────────────────┐
         │ 输出选项 (仅限 image 模式)                                      │
         └──────────────────────────────────────────────────────────────────┘
           --output <file>       输出文件路径
-                                  系统默认: output.ppm
+                                  系统默认: 自动根据渲染参数生成
+                                  格式: <scene>_<width>x<height>_<spp>_d<depth>[_options].ppm
 
         ┌──────────────────────────────────────────────────────────────────┐
         │ 其他                                                             │
@@ -148,17 +187,21 @@ struct CommandLineArgs {
         \(programName) --mode window --scene 0
         \(programName) --mode window --scene 1 --width 800
 
-        # 2. 离线渲染（默认模式）
+        # 2. 离线渲染 - 固定采样（默认模式）
         \(programName) --scene cornellBox --spp 100
         \(programName) --scene 2 --spp 500 --output final.ppm
 
-        # 3. 高质量渲染
+        # 3. 离线渲染 - 自适应采样（推荐，节省 30-60% 渲染时间）
+        \(programName) --scene cornellBox --spp 100 --min-spp 16
+        \(programName) --scene bouncingSpheres --spp 64 --min-spp 4 --width 800
+
+        # 4. 高质量渲染
         \(programName) --scene 1 --spp 1000 --width 1920 --max-depth 50
 
-        # 4. 实时窗口 + 高质量
+        # 5. 实时窗口 + 高质量
         \(programName) --mode window --scene cornellBox --batch-size 4
 
-        # 5. 景深效果
+        # 6. 景深效果
         \(programName) --scene finalScene --defocus-angle 0.6 --spp 200
 
         ╔══════════════════════════════════════════════════════════════════╗
@@ -249,6 +292,18 @@ struct CommandLineArgs {
                     return nil
                 }
                 args.spp = value
+                i += 2
+
+            case "--min-spp":
+                guard i + 1 < arguments.count else {
+                    print("错误: --min-spp 需要参数")
+                    return nil
+                }
+                guard let value = Int(arguments[i + 1]), value > 0 else {
+                    print("错误: --min-spp 必须是正整数")
+                    return nil
+                }
+                args.minSpp = value
                 i += 2
 
             case "--batch-size":
@@ -388,6 +443,46 @@ struct CommandLineArgs {
                 args.useBlueNoise = true
                 i += 1
 
+            case "--weighted-variance":
+                args.useWeightedVariance = true
+                i += 1
+
+            case "--adaptive-threshold":
+                guard i + 1 < arguments.count else {
+                    print("错误: --adaptive-threshold 需要参数")
+                    return nil
+                }
+                guard let value = Float(arguments[i + 1]), value > 0 else {
+                    print("错误: --adaptive-threshold 必须是正数")
+                    return nil
+                }
+                args.adaptiveVarianceThreshold = value
+                i += 2
+
+            case "--adaptive-relative-error":
+                guard i + 1 < arguments.count else {
+                    print("错误: --adaptive-relative-error 需要参数")
+                    return nil
+                }
+                guard let value = Float(arguments[i + 1]), value > 0 else {
+                    print("错误: --adaptive-relative-error 必须是正数")
+                    return nil
+                }
+                args.adaptiveRelativeThreshold = value
+                i += 2
+
+            case "--adaptive-batch-size":
+                guard i + 1 < arguments.count else {
+                    print("错误: --adaptive-batch-size 需要参数")
+                    return nil
+                }
+                guard let value = Int(arguments[i + 1]), value > 0 else {
+                    print("错误: --adaptive-batch-size 必须是正整数")
+                    return nil
+                }
+                args.adaptiveBatchSize = value
+                i += 2
+
             default:
                 print("错误: 未知参数 '\(arg)'")
                 print("使用 --help 查看帮助信息")
@@ -399,6 +494,19 @@ struct CommandLineArgs {
         if args.bloomStrength > 0.0 && args.tonemapMode == .none {
             args.tonemapMode = .aces
             print("ℹ️  Bloom 已开启，自动启用 ACES Tone Mapping")
+        }
+
+        // 验证自适应采样参数
+        if args.minSpp != nil && args.spp == nil {
+            print("错误: --min-spp 必须配合 --spp 使用")
+            print("  --spp 指定总采样预算，--min-spp 指定每个像素的最小采样数")
+            return nil
+        }
+        if let minSpp = args.minSpp, let spp = args.spp {
+            if minSpp >= spp {
+                print("错误: --min-spp (\(minSpp)) 必须小于 --spp (\(spp))")
+                return nil
+            }
         }
 
         return args
@@ -415,7 +523,7 @@ struct CommandLineArgs {
     }
 
     /// 生成默认输出文件名（基于渲染参数）
-    /// 格式: <scene>_<width>x<height>_<spp>s_d<depth>[_<optional_params>].ppm
+    /// 格式: <scene>_<width>x<height>_<spp|adaptive>_d<depth>[_<optional_params>].ppm
     func generateDefaultOutputFilename(scene: Scene) -> String {
         var parts: [String] = []
 
@@ -428,8 +536,14 @@ struct CommandLineArgs {
         parts.append("\(width)x\(height)")
 
         // 3. 采样数（必选）
-        let spp = self.spp ?? Int(scene.camera.samplesPerPixel)
-        parts.append("\(spp)s")
+        if useAdaptiveSampling {
+            // 自适应采样：显示 minSpp-spp 范围
+            let totalSpp = self.spp ?? Int(scene.camera.samplesPerPixel)
+            parts.append("adaptive\(minSpp!)-\(totalSpp)s")
+        } else {
+            let spp = self.spp ?? Int(scene.camera.samplesPerPixel)
+            parts.append("\(spp)s")
+        }
 
         // 4. 最大深度（必选）
         let depth = self.maxDepth ?? Int(scene.camera.maxDepth)

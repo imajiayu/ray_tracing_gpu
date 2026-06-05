@@ -39,6 +39,11 @@ xcrun -sdk macosx metal \
     -o "$BUILD_DIR/Bloom.air" \
     -I "$SHADER_DIR"
 
+xcrun -sdk macosx metal \
+    -c "$SHADER_DIR/Kernels/AdaptiveSampling.metal" \
+    -o "$BUILD_DIR/AdaptiveSampling.air" \
+    -I "$SHADER_DIR"
+
 # 创建 .metallib
 echo "[2/3] Linking .air -> .metallib..."
 xcrun -sdk macosx metallib \
@@ -47,6 +52,7 @@ xcrun -sdk macosx metallib \
     "$BUILD_DIR/Blit.air" \
     "$BUILD_DIR/HUD.air" \
     "$BUILD_DIR/Bloom.air" \
+    "$BUILD_DIR/AdaptiveSampling.air" \
     -o "$BUILD_DIR/default.metallib"
 
 # 复制到资源目录
